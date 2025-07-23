@@ -11,6 +11,7 @@ import sys
 import threading
 from decimal import Decimal
 import webbrowser
+import platform
 
 # Import our PDF processor
 from main_processor import PDFStatementProcessor
@@ -20,7 +21,20 @@ class PDFProcessorGUI:
         self.root = root
         self.root.title("PDF Statement Balance Updater - Maybank Edition")
         self.root.geometry("800x600")
-        self.root.configure(bg='#f0f0f0')
+        
+        # Detect operating system for platform-specific fixes
+        self.is_macos = platform.system() == 'Darwin'
+        
+        # Configure root window with macOS-compatible settings
+        if self.is_macos:
+            # Use system colors on macOS for better compatibility
+            self.root.configure(bg='SystemWindowBackgroundColor')
+            # Fix for macOS focus issues
+            self.root.lift()
+            self.root.attributes('-topmost', True)
+            self.root.after_idle(lambda: self.root.attributes('-topmost', False))
+        else:
+            self.root.configure(bg='#f0f0f0')
         
         # Variables
         self.input_file_var = tk.StringVar()
@@ -30,27 +44,46 @@ class PDFProcessorGUI:
         # PDF Processor instance
         self.processor = PDFStatementProcessor()
         
-        self.setup_gui()
+        # Setup GUI after a small delay on macOS to ensure proper initialization
+        if self.is_macos:
+            self.root.after(100, self.setup_gui)
+        else:
+            self.setup_gui()
+        
+    def get_bg_color(self):
+        """Get appropriate background color for the platform"""
+        return 'SystemWindowBackgroundColor' if self.is_macos else '#f0f0f0'
+    
+    def get_title_bg_color(self):
+        """Get appropriate title background color for the platform"""
+        return 'SystemHeaderBackgroundColor' if self.is_macos else '#2c3e50'
+    
+    def get_title_fg_color(self):
+        """Get appropriate title foreground color for the platform"""
+        return 'SystemHeaderTextColor' if self.is_macos else 'white'
         
     def setup_gui(self):
         """Setup the GUI components"""
         
         # Main title
-        title_frame = tk.Frame(self.root, bg='#2c3e50', height=60)
+        title_frame = tk.Frame(self.root, bg=self.get_title_bg_color(), height=60)
         title_frame.pack(fill='x', padx=0, pady=0)
         title_frame.pack_propagate(False)
+        
+        # Use system fonts on macOS
+        title_font = ('System', 18, 'bold') if self.is_macos else ('Arial', 18, 'bold')
         
         title_label = tk.Label(
             title_frame, 
             text="🏦 PDF Statement Balance Updater",
-            font=('Arial', 18, 'bold'),
-            fg='white',
-            bg='#2c3e50'
+            font=title_font,
+            fg=self.get_title_fg_color(),
+            bg=self.get_title_bg_color()
         )
         title_label.pack(pady=15)
         
         # Main content frame
-        main_frame = tk.Frame(self.root, bg='#f0f0f0')
+        main_frame = tk.Frame(self.root, bg=self.get_bg_color())
         main_frame.pack(fill='both', expand=True, padx=20, pady=20)
         
         # File selection section
@@ -71,100 +104,106 @@ class PDFProcessorGUI:
     def create_file_section(self, parent):
         """Create file selection section"""
         
+        # Use system fonts on macOS
+        label_font = ('System', 12, 'bold') if self.is_macos else ('Arial', 12, 'bold')
+        text_font = ('System', 10) if self.is_macos else ('Arial', 10)
+        
         # Input file frame
         input_frame = tk.LabelFrame(
             parent, 
             text="📄 Select PDF File", 
-            font=('Arial', 12, 'bold'),
-            bg='#f0f0f0',
-            fg='#2c3e50'
+            font=label_font,
+            bg=self.get_bg_color(),
+            fg='SystemControlTextColor' if self.is_macos else '#2c3e50'
         )
         input_frame.pack(fill='x', pady=(0, 15))
         
         # Input file selection
-        input_file_frame = tk.Frame(input_frame, bg='#f0f0f0')
+        input_file_frame = tk.Frame(input_frame, bg=self.get_bg_color())
         input_file_frame.pack(fill='x', padx=10, pady=10)
         
         tk.Label(
             input_file_frame, 
             text="Input PDF:", 
-            font=('Arial', 10),
-            bg='#f0f0f0'
+            font=text_font,
+            bg=self.get_bg_color()
         ).pack(side='left')
         
         self.input_entry = tk.Entry(
             input_file_frame, 
             textvariable=self.input_file_var,
-            font=('Arial', 10),
+            font=text_font,
             width=50
         )
         self.input_entry.pack(side='left', padx=(10, 5), fill='x', expand=True)
         
-        tk.Button(
-            input_file_frame,
-            text="Browse",
-            command=self.browse_input_file,
-            bg='#3498db',
-            fg='white',
-            font=('Arial', 10),
-            cursor='hand2'
-        ).pack(side='right')
+        # Use system button style on macOS
+        browse_btn_config = {
+            'text': "Browse",
+            'command': self.browse_input_file,
+            'font': text_font
+        }
+        
+        if not self.is_macos:
+            browse_btn_config.update({
+                'bg': '#3498db',
+                'fg': 'white',
+                'cursor': 'hand2'
+            })
+        
+        tk.Button(input_file_frame, **browse_btn_config).pack(side='right')
         
         # Output file selection
-        output_file_frame = tk.Frame(input_frame, bg='#f0f0f0')
+        output_file_frame = tk.Frame(input_frame, bg=self.get_bg_color())
         output_file_frame.pack(fill='x', padx=10, pady=(0, 10))
         
         tk.Label(
             output_file_frame, 
             text="Output PDF:", 
-            font=('Arial', 10),
-            bg='#f0f0f0'
+            font=text_font,
+            bg=self.get_bg_color()
         ).pack(side='left')
         
         self.output_entry = tk.Entry(
             output_file_frame, 
             textvariable=self.output_file_var,
-            font=('Arial', 10),
+            font=text_font,
             width=50
         )
         self.output_entry.pack(side='left', padx=(10, 5), fill='x', expand=True)
         
-        tk.Button(
-            output_file_frame,
-            text="Browse",
-            command=self.browse_output_file,
-            bg='#3498db',
-            fg='white',
-            font=('Arial', 10),
-            cursor='hand2'
-        ).pack(side='right')
+        tk.Button(output_file_frame, **browse_btn_config).pack(side='right')
         
     def create_balance_section(self, parent):
         """Create balance input section"""
         
+        label_font = ('System', 12, 'bold') if self.is_macos else ('Arial', 12, 'bold')
+        text_font = ('System', 10) if self.is_macos else ('Arial', 10)
+        entry_font = ('System', 12) if self.is_macos else ('Arial', 12)
+        
         balance_frame = tk.LabelFrame(
             parent, 
             text="💰 Beginning Balance", 
-            font=('Arial', 12, 'bold'),
-            bg='#f0f0f0',
-            fg='#2c3e50'
+            font=label_font,
+            bg=self.get_bg_color(),
+            fg='SystemControlTextColor' if self.is_macos else '#2c3e50'
         )
         balance_frame.pack(fill='x', pady=(0, 15))
         
-        balance_input_frame = tk.Frame(balance_frame, bg='#f0f0f0')
+        balance_input_frame = tk.Frame(balance_frame, bg=self.get_bg_color())
         balance_input_frame.pack(fill='x', padx=10, pady=10)
         
         tk.Label(
             balance_input_frame, 
             text="Enter beginning balance (RM):", 
-            font=('Arial', 10),
-            bg='#f0f0f0'
+            font=text_font,
+            bg=self.get_bg_color()
         ).pack(side='left')
         
         self.balance_entry = tk.Entry(
             balance_input_frame, 
             textvariable=self.balance_var,
-            font=('Arial', 12),
+            font=entry_font,
             width=20,
             justify='right'
         )
@@ -173,27 +212,34 @@ class PDFProcessorGUI:
         tk.Label(
             balance_input_frame, 
             text="(e.g., 4000.00)", 
-            font=('Arial', 9),
-            fg='gray',
-            bg='#f0f0f0'
+            font=('System', 9) if self.is_macos else ('Arial', 9),
+            fg='SystemSecondaryLabelColor' if self.is_macos else 'gray',
+            bg=self.get_bg_color()
         ).pack(side='left', padx=(10, 0))
         
     def create_process_section(self, parent):
         """Create process button section"""
         
-        process_frame = tk.Frame(parent, bg='#f0f0f0')
+        process_frame = tk.Frame(parent, bg=self.get_bg_color())
         process_frame.pack(fill='x', pady=(0, 15))
         
-        self.process_button = tk.Button(
-            process_frame,
-            text="🚀 Process PDF Statement",
-            command=self.process_pdf,
-            bg='#27ae60',
-            fg='white',
-            font=('Arial', 14, 'bold'),
-            height=2,
-            cursor='hand2'
-        )
+        # Process button configuration
+        button_font = ('System', 14, 'bold') if self.is_macos else ('Arial', 14, 'bold')
+        button_config = {
+            'text': "🚀 Process PDF Statement",
+            'command': self.process_pdf,
+            'font': button_font,
+            'height': 2
+        }
+        
+        if not self.is_macos:
+            button_config.update({
+                'bg': '#27ae60',
+                'fg': 'white',
+                'cursor': 'hand2'
+            })
+        
+        self.process_button = tk.Button(process_frame, **button_config)
         self.process_button.pack(pady=10)
         
         # Progress bar
@@ -207,55 +253,79 @@ class PDFProcessorGUI:
     def create_results_section(self, parent):
         """Create results display section"""
         
+        label_font = ('System', 12, 'bold') if self.is_macos else ('Arial', 12, 'bold')
+        
         results_frame = tk.LabelFrame(
             parent, 
             text="📊 Processing Results", 
-            font=('Arial', 12, 'bold'),
-            bg='#f0f0f0',
-            fg='#2c3e50'
+            font=label_font,
+            bg=self.get_bg_color(),
+            fg='SystemControlTextColor' if self.is_macos else '#2c3e50'
         )
         results_frame.pack(fill='both', expand=True)
         
-        # Results text area
+        # Results text area with platform-appropriate colors
+        text_bg = 'SystemTextBackgroundColor' if self.is_macos else '#2c3e50'
+        text_fg = 'SystemTextColor' if self.is_macos else '#ecf0f1'
+        text_font = ('Monaco', 9) if self.is_macos else ('Consolas', 9)
+        
         self.results_text = scrolledtext.ScrolledText(
             results_frame,
             height=15,
-            font=('Consolas', 9),
-            bg='#2c3e50',
-            fg='#ecf0f1',
-            insertbackground='white'
+            font=text_font,
+            bg=text_bg,
+            fg=text_fg,
+            insertbackground='SystemTextColor' if self.is_macos else 'white'
         )
         self.results_text.pack(fill='both', expand=True, padx=10, pady=10)
         
         # Buttons frame
-        buttons_frame = tk.Frame(results_frame, bg='#f0f0f0')
+        buttons_frame = tk.Frame(results_frame, bg=self.get_bg_color())
         buttons_frame.pack(fill='x', padx=10, pady=(0, 10))
         
-        self.open_output_button = tk.Button(
-            buttons_frame,
-            text="📁 Open Output Folder",
-            command=self.open_output_folder,
-            bg='#f39c12',
-            fg='white',
-            font=('Arial', 10),
-            state='disabled',
-            cursor='hand2'
-        )
+        button_font = ('System', 10) if self.is_macos else ('Arial', 10)
+        
+        # Open output button
+        open_btn_config = {
+            'text': "📁 Open Output Folder",
+            'command': self.open_output_folder,
+            'font': button_font,
+            'state': 'disabled'
+        }
+        
+        if not self.is_macos:
+            open_btn_config.update({
+                'bg': '#f39c12',
+                'fg': 'white',
+                'cursor': 'hand2'
+            })
+        
+        self.open_output_button = tk.Button(buttons_frame, **open_btn_config)
         self.open_output_button.pack(side='left', padx=(0, 10))
         
-        self.clear_button = tk.Button(
-            buttons_frame,
-            text="🗑️ Clear Results",
-            command=self.clear_results,
-            bg='#e74c3c',
-            fg='white',
-            font=('Arial', 10),
-            cursor='hand2'
-        )
+        # Clear button
+        clear_btn_config = {
+            'text': "🗑️ Clear Results",
+            'command': self.clear_results,
+            'font': button_font
+        }
+        
+        if not self.is_macos:
+            clear_btn_config.update({
+                'bg': '#e74c3c',
+                'fg': 'white',
+                'cursor': 'hand2'
+            })
+        
+        self.clear_button = tk.Button(buttons_frame, **clear_btn_config)
         self.clear_button.pack(side='left')
         
     def create_status_bar(self):
         """Create status bar"""
+        
+        status_bg = 'SystemWindowBackgroundColor' if self.is_macos else '#34495e'
+        status_fg = 'SystemSecondaryLabelColor' if self.is_macos else 'white'
+        status_font = ('System', 9) if self.is_macos else ('Arial', 9)
         
         self.status_bar = tk.Label(
             self.root,
@@ -263,9 +333,9 @@ class PDFProcessorGUI:
             bd=1,
             relief='sunken',
             anchor='w',
-            bg='#34495e',
-            fg='white',
-            font=('Arial', 9)
+            bg=status_bg,
+            fg=status_fg,
+            font=status_font
         )
         self.status_bar.pack(side='bottom', fill='x')
         
@@ -368,13 +438,21 @@ class PDFProcessorGUI:
                 self.log_message
             )
             
-            # Update UI in main thread
-            self.root.after(0, self.process_complete, success, output_file)
+            # Update UI in main thread - critical for macOS
+            if self.is_macos:
+                # Use after_idle for better macOS compatibility
+                self.root.after_idle(lambda: self.process_complete(success, output_file))
+            else:
+                self.root.after(0, self.process_complete, success, output_file)
             
         except Exception as e:
             error_msg = f"❌ Error during processing: {str(e)}"
-            self.root.after(0, self.log_message, error_msg)
-            self.root.after(0, self.process_complete, False, None)
+            if self.is_macos:
+                self.root.after_idle(lambda: self.log_message(error_msg))
+                self.root.after_idle(lambda: self.process_complete(False, None))
+            else:
+                self.root.after(0, self.log_message, error_msg)
+                self.root.after(0, self.process_complete, False, None)
             
     def process_complete(self, success, output_file):
         """Called when processing is complete"""
@@ -404,7 +482,12 @@ class PDFProcessorGUI:
         
         self.results_text.insert(tk.END, message + "\n")
         self.results_text.see(tk.END)
-        self.root.update_idletasks()
+        
+        # Use update() instead of update_idletasks() on macOS for better responsiveness
+        if self.is_macos:
+            self.root.update()
+        else:
+            self.root.update_idletasks()
         
     def open_output_folder(self):
         """Open the folder containing the output file"""
@@ -443,15 +526,42 @@ def main():
         return
     
     root = tk.Tk()
+    
+    # macOS-specific fixes
+    if platform.system() == 'Darwin':
+        # Fix for macOS Big Sur and later appearance issues
+        try:
+            root.tk.call('tk', 'scaling', 1.0)
+        except:
+            pass
+        
+        # Ensure proper window creation on macOS
+        root.update_idletasks()
+    
     app = PDFProcessorGUI(root)
     
-    # Center the window
+    # Center the window with improved macOS compatibility
     root.update_idletasks()
     width = root.winfo_width()
     height = root.winfo_height()
-    x = (root.winfo_screenwidth() // 2) - (width // 2)
-    y = (root.winfo_screenheight() // 2) - (height // 2)
+    
+    # Get screen dimensions properly on macOS
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
+    
+    x = (screen_width // 2) - (width // 2)
+    y = (screen_height // 2) - (height // 2)
+    
+    # Ensure window doesn't go off-screen
+    x = max(0, min(x, screen_width - width))
+    y = max(0, min(y, screen_height - height))
+    
     root.geometry(f"{width}x{height}+{x}+{y}")
+    
+    # Final macOS-specific setup
+    if platform.system() == 'Darwin':
+        root.lift()
+        root.focus_force()
     
     root.mainloop()
 
