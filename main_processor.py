@@ -478,9 +478,9 @@ class PDFStatementProcessor:
                 'subject': original_metadata.get('subject', ''),
                 'keywords': original_metadata.get('keywords', ''),
                 'creator': original_metadata.get('creator', ''),
-                'producer': f"PDF Statement Processor (Original: {original_metadata.get('producer', '')})",
+                'producer': original_metadata.get('producer', ''),
                 'creationDate': original_metadata.get('creationDate', ''),
-                'modDate': fitz.get_pdf_now()  # Set current date as modification date
+                'modDate': original_metadata.get('modDate', '')
             }
             
             # Apply metadata to the new PDF
