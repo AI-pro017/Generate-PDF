@@ -322,6 +322,38 @@ class HLBProcessor(BaseProcessor):
         except Exception as e:
             log_func(f"⚠️ Error finding HLB closing balance: {e}")
 
+    # Override erase box just for HLB so we don't wipe the right table rule
+    def _erase_rect(self, page, bbox):
+        """Return a tighter erase rectangle for HLB numbers.
+
+        Requirements:
+        - Do not increase height (avoid touching horizontal rules)
+        - Pull the right edge slightly left so the vertical border line remains visible
+        - Keep a small left padding to fully cover any light background behind digits
+        """
+        import fitz
+        x0, y0, x1, y1 = bbox
+        left_pad = 6.0
+        right_inset = 2.0  # stay this far left of the balance column edge
+
+        # Keep height unchanged; only adjust width/position
+        rx0 = x0 - left_pad
+        rx1 = x1 - right_inset
+
+        # Ensure at least 1pt width
+        if rx1 <= rx0 + 1.0:
+            rx1 = rx0 + 1.0
+
+        r = fitz.Rect(rx0, y0, rx1, y1)
+
+        # Clamp to page bounds
+        pr = page.rect
+        r.x0 = max(pr.x0, r.x0)
+        r.y0 = max(pr.y0, r.y0)
+        r.x1 = min(pr.x1, r.x1)
+        r.y1 = min(pr.y1, r.y1)
+        return r
+
     # Abstracts (unused by this parser, but required)
     def _find_balance_column_position(self, all_blocks: List[Dict], log_func: Callable) -> float:
         headers = self._locate_headers(all_blocks)
