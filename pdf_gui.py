@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PDF Statement Balance Updater - GUI Version
+PDF Statement Balance Updater - Multi-Bank GUI Version
 A user-friendly GUI application to update statement balance values in PDF bank statements.
 """
 
@@ -12,15 +12,23 @@ import threading
 from decimal import Decimal
 import webbrowser
 import platform
+from datetime import datetime
 
-# Import our PDF processor
-from main_processor import PDFStatementProcessor
+# Import our multi-bank processor system
+try:
+    from processors import get_processor, get_supported_banks
+    MULTI_BANK_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️ Multi-bank system not available: {e}")
+    MULTI_BANK_AVAILABLE = False
+    get_processor = None
+    get_supported_banks = None
 
 class PDFProcessorGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("PDF Statement Balance Updater - Maybank Edition")
-        self.root.geometry("800x600")
+        self.root.title("PDF Statement Balance Updater - Multi-Bank Edition")
+        self.root.geometry("900x700")
         
         # Detect operating system for platform-specific fixes
         self.is_macos = platform.system() == 'Darwin'
@@ -40,15 +48,47 @@ class PDFProcessorGUI:
         self.input_file_var = tk.StringVar()
         self.output_file_var = tk.StringVar()
         self.balance_var = tk.StringVar()
+        self.bank_var = tk.StringVar()
         
-        # PDF Processor instance
-        self.processor = PDFStatementProcessor()
+        # Initialize processor system
+        self.initialize_processor_system()
         
         # Setup GUI after a small delay on macOS to ensure proper initialization
         if self.is_macos:
             self.root.after(100, self.setup_gui)
         else:
             self.setup_gui()
+    
+    def initialize_processor_system(self):
+        """Initialize the multi-bank processor system"""
+        if MULTI_BANK_AVAILABLE and get_processor and get_supported_banks:
+            try:
+                self.supported_banks = get_supported_banks()
+                self.use_multi_bank = True
+                # Create default processor (MBB)
+                self.processor = get_processor('MBB')
+                print(f"✅ Multi-bank system initialized with {len(self.supported_banks)} banks")
+            except Exception as e:
+                print(f"❌ Error initializing multi-bank system: {e}")
+                # Fallback to original system
+                self.fallback_to_legacy_system()
+        else:
+            # Fallback to original system
+            self.fallback_to_legacy_system()
+    
+    def fallback_to_legacy_system(self):
+        """Fallback to the original single-bank system"""
+        try:
+            from main_processor import PDFStatementProcessor
+            self.processor = PDFStatementProcessor()
+            self.supported_banks = ['MBB']  # Only Maybank supported in original
+            self.use_multi_bank = False
+            print("✅ Using legacy single-bank system")
+        except Exception as e:
+            print(f"❌ Error initializing legacy system: {e}")
+            self.processor = None
+            self.supported_banks = []
+            self.use_multi_bank = False
         
     def get_bg_color(self):
         """Get appropriate background color for the platform"""
@@ -75,7 +115,7 @@ class PDFProcessorGUI:
         
         title_label = tk.Label(
             title_frame, 
-            text="🏦 PDF Statement Balance Updater",
+            text="🏦 Multi-Bank PDF Statement Balance Updater",
             font=title_font,
             fg=self.get_title_fg_color(),
             bg=self.get_title_bg_color()
@@ -85,6 +125,9 @@ class PDFProcessorGUI:
         # Main content frame
         main_frame = tk.Frame(self.root, bg=self.get_bg_color())
         main_frame.pack(fill='both', expand=True, padx=20, pady=20)
+        
+        # Bank selection section
+        self.create_bank_section(main_frame)
         
         # File selection section
         self.create_file_section(main_frame)
@@ -100,6 +143,85 @@ class PDFProcessorGUI:
         
         # Status bar
         self.create_status_bar()
+    
+    def create_bank_section(self, parent):
+        """Create bank selection section"""
+        
+        label_font = ('System', 12, 'bold') if self.is_macos else ('Arial', 12, 'bold')
+        text_font = ('System', 10) if self.is_macos else ('Arial', 10)
+        
+        # Bank selection frame
+        bank_frame = tk.LabelFrame(
+            parent, 
+            text="🏦 Select Bank", 
+            font=label_font,
+            bg=self.get_bg_color(),
+            fg='SystemControlTextColor' if self.is_macos else '#2c3e50'
+        )
+        bank_frame.pack(fill='x', pady=(0, 15))
+        
+        bank_input_frame = tk.Frame(bank_frame, bg=self.get_bg_color())
+        bank_input_frame.pack(fill='x', padx=10, pady=10)
+        
+        tk.Label(
+            bank_input_frame, 
+            text="Bank:", 
+            font=text_font,
+            bg=self.get_bg_color()
+        ).pack(side='left')
+        
+        # Create bank selection dropdown
+        self.bank_combo = ttk.Combobox(
+            bank_input_frame,
+            textvariable=self.bank_var,
+            values=self.supported_banks,
+            state='readonly',
+            font=text_font,
+            width=20
+        )
+        self.bank_combo.pack(side='left', padx=(10, 0))
+        
+        # Set default bank
+        if self.supported_banks:
+            self.bank_var.set(self.supported_banks[0])
+            self.bank_combo.set(self.supported_banks[0])
+        
+        # Bind bank selection change
+        self.bank_combo.bind('<<ComboboxSelected>>', self.on_bank_selected)
+        
+        # Bank status label
+        self.bank_status_label = tk.Label(
+            bank_input_frame,
+            text="✅ MBB (Maybank) - Fully supported",
+            font=('System', 9) if self.is_macos else ('Arial', 9),
+            fg='green' if not self.is_macos else 'SystemGreenColor',
+            bg=self.get_bg_color()
+        )
+        self.bank_status_label.pack(side='right', padx=(10, 0))
+        
+    def on_bank_selected(self, event=None):
+        """Handle bank selection change"""
+        selected_bank = self.bank_var.get()
+        if not selected_bank:
+            return
+        
+        # Update status label
+        if selected_bank == 'MBB':
+            status_text = "✅ MBB (Maybank) - Fully supported"
+            status_color = 'green' if not self.is_macos else 'SystemGreenColor'
+        else:
+            status_text = f"⚠️ {selected_bank} - Analysis mode (extracts content for implementation)"
+            status_color = 'orange' if not self.is_macos else 'SystemOrangeColor'
+        
+        self.bank_status_label.config(text=status_text, fg=status_color)
+        
+        # Create processor for selected bank
+        if self.use_multi_bank and MULTI_BANK_AVAILABLE:
+            try:
+                self.processor = get_processor(selected_bank)
+                self.log_message(f"🏦 Switched to {selected_bank} processor")
+            except Exception as e:
+                self.log_message(f"❌ Error creating {selected_bank} processor: {e}")
         
     def create_file_section(self, parent):
         """Create file selection section"""
@@ -153,26 +275,27 @@ class PDFProcessorGUI:
         
         tk.Button(input_file_frame, **browse_btn_config).pack(side='right')
         
-        # Output file selection
-        output_file_frame = tk.Frame(input_frame, bg=self.get_bg_color())
-        output_file_frame.pack(fill='x', padx=10, pady=(0, 10))
+        # Output folder info
+        output_info_frame = tk.Frame(input_frame, bg=self.get_bg_color())
+        output_info_frame.pack(fill='x', padx=10, pady=(0, 10))
         
         tk.Label(
-            output_file_frame, 
-            text="Output PDF:", 
+            output_info_frame, 
+            text="Output will be saved to:", 
             font=text_font,
             bg=self.get_bg_color()
         ).pack(side='left')
         
-        self.output_entry = tk.Entry(
-            output_file_frame, 
-            textvariable=self.output_file_var,
+        # Show output folder path
+        output_folder = os.path.join(os.getcwd(), "output")
+        self.output_folder_label = tk.Label(
+            output_info_frame,
+            text=f"📁 {output_folder}",
             font=text_font,
-            width=50
+            fg='blue' if not self.is_macos else 'SystemBlueColor',
+            bg=self.get_bg_color()
         )
-        self.output_entry.pack(side='left', padx=(10, 5), fill='x', expand=True)
-        
-        tk.Button(output_file_frame, **browse_btn_config).pack(side='right')
+        self.output_folder_label.pack(side='left', padx=(10, 0))
         
     def create_balance_section(self, parent):
         """Create balance input section"""
@@ -201,11 +324,10 @@ class PDFProcessorGUI:
         ).pack(side='left')
         
         self.balance_entry = tk.Entry(
-            balance_input_frame, 
+            balance_input_frame,
             textvariable=self.balance_var,
             font=entry_font,
-            width=20,
-            justify='right'
+            width=15
         )
         self.balance_entry.pack(side='left', padx=(10, 0))
         
@@ -251,7 +373,7 @@ class PDFProcessorGUI:
         self.progress.pack(pady=(0, 10))
         
     def create_results_section(self, parent):
-        """Create results display section"""
+        """Create results section"""
         
         label_font = ('System', 12, 'bold') if self.is_macos else ('Arial', 12, 'bold')
         
@@ -262,20 +384,15 @@ class PDFProcessorGUI:
             bg=self.get_bg_color(),
             fg='SystemControlTextColor' if self.is_macos else '#2c3e50'
         )
-        results_frame.pack(fill='both', expand=True)
+        results_frame.pack(fill='both', expand=True, pady=(0, 15))
         
-        # Results text area with platform-appropriate colors
-        text_bg = 'SystemTextBackgroundColor' if self.is_macos else '#2c3e50'
-        text_fg = 'SystemTextColor' if self.is_macos else '#ecf0f1'
-        text_font = ('Monaco', 9) if self.is_macos else ('Consolas', 9)
-        
+        # Results text area
         self.results_text = scrolledtext.ScrolledText(
             results_frame,
             height=15,
-            font=text_font,
-            bg=text_bg,
-            fg=text_fg,
-            insertbackground='SystemTextColor' if self.is_macos else 'white'
+            font=('System', 9) if self.is_macos else ('Courier', 9),
+            bg='white' if not self.is_macos else 'SystemWindowBackgroundColor',
+            fg='black' if not self.is_macos else 'SystemWindowTextColor'
         )
         self.results_text.pack(fill='both', expand=True, padx=10, pady=10)
         
@@ -285,7 +402,7 @@ class PDFProcessorGUI:
         
         button_font = ('System', 10) if self.is_macos else ('Arial', 10)
         
-        # Open output button
+        # Open output folder button
         open_btn_config = {
             'text': "📁 Open Output Folder",
             'command': self.open_output_folder,
@@ -295,7 +412,7 @@ class PDFProcessorGUI:
         
         if not self.is_macos:
             open_btn_config.update({
-                'bg': '#f39c12',
+                'bg': '#3498db',
                 'fg': 'white',
                 'cursor': 'hand2'
             })
@@ -349,54 +466,61 @@ class PDFProcessorGUI:
         
         if filename:
             self.input_file_var.set(filename)
-            # Auto-generate output filename
-            if not self.output_file_var.get():
-                base_name = os.path.splitext(filename)[0]
-                output_name = f"{base_name}_updated.pdf"
-                self.output_file_var.set(output_name)
-            
             self.log_message(f"📄 Selected input file: {filename}")
             
-    def browse_output_file(self):
-        """Browse for output PDF file"""
+    def generate_output_filename(self, input_file: str, bank_code: str) -> str:
+        """Generate output filename in the output folder"""
+        # Ensure output folder exists
+        output_folder = os.path.join(os.getcwd(), "output")
+        os.makedirs(output_folder, exist_ok=True)
         
-        filename = filedialog.asksaveasfilename(
-            title="Save Updated PDF As",
-            defaultextension=".pdf",
-            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")]
-        )
+        # Get base filename without extension
+        base_name = os.path.splitext(os.path.basename(input_file))[0]
         
-        if filename:
-            self.output_file_var.set(filename)
-            self.log_message(f"💾 Output file set to: {filename}")
-            
+        # Create timestamp for unique filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Generate output filename
+        output_filename = f"{base_name}_{bank_code}_{timestamp}.pdf"
+        output_path = os.path.join(output_folder, output_filename)
+        
+        return output_path
+        
     def validate_inputs(self):
-        """Validate user inputs"""
+        """Validate all inputs before processing"""
         
-        # Check input file
+        # Check if processor is available
+        if not self.processor:
+            messagebox.showerror("Error", "No processor available. Please check system initialization.")
+            return False
+        
+        # Check if bank is selected
+        if not self.bank_var.get():
+            messagebox.showerror("Error", "Please select a bank.")
+            return False
+        
+        # Check if input file is selected
         if not self.input_file_var.get():
-            messagebox.showerror("Error", "Please select an input PDF file")
+            messagebox.showerror("Error", "Please select an input PDF file.")
             return False
-            
+        
+        # Check if input file exists
         if not os.path.exists(self.input_file_var.get()):
-            messagebox.showerror("Error", "Input PDF file does not exist")
+            messagebox.showerror("Error", "Input file does not exist.")
             return False
-            
-        # Check output file
-        if not self.output_file_var.get():
-            messagebox.showerror("Error", "Please specify an output PDF file")
+        
+        # Check if beginning balance is entered
+        if not self.balance_var.get():
+            messagebox.showerror("Error", "Please enter a beginning balance.")
             return False
-            
-        # Check balance
+        
+        # Check if beginning balance is valid
         try:
-            balance = float(self.balance_var.get())
-            if balance < 0:
-                messagebox.showerror("Error", "Beginning balance cannot be negative")
-                return False
+            float(self.balance_var.get())
         except ValueError:
-            messagebox.showerror("Error", "Please enter a valid beginning balance (numbers only)")
+            messagebox.showerror("Error", "Please enter a valid beginning balance (numbers only).")
             return False
-            
+        
         return True
         
     def process_pdf(self):
@@ -423,11 +547,16 @@ class PDFProcessorGUI:
         
         try:
             input_file = self.input_file_var.get()
-            output_file = self.output_file_var.get()
             beginning_balance = float(self.balance_var.get())
+            selected_bank = self.bank_var.get()
+            
+            # Generate output filename
+            output_file = self.generate_output_filename(input_file, selected_bank)
             
             # Redirect output to our text widget
             self.log_message("🚀 Starting PDF processing...")
+            self.log_message(f"🏦 Selected bank: {selected_bank}")
+            self.log_message(f"📁 Output will be saved to: {output_file}")
             self.log_message("=" * 60)
             
             # Process the statement
@@ -488,83 +617,36 @@ class PDFProcessorGUI:
             self.root.update()
         else:
             self.root.update_idletasks()
-        
+            
     def open_output_folder(self):
-        """Open the folder containing the output file"""
+        """Open the output folder in file explorer"""
         
-        output_file = self.output_file_var.get()
-        if output_file and os.path.exists(output_file):
-            folder = os.path.dirname(output_file)
-            if sys.platform == "win32":
-                os.startfile(folder)
-            elif sys.platform == "darwin":
-                os.system(f"open '{folder}'")
-            else:
-                os.system(f"xdg-open '{folder}'")
-                
+        output_folder = os.path.join(os.getcwd(), "output")
+        if os.path.exists(output_folder):
+            try:
+                if platform.system() == "Windows":
+                    os.startfile(output_folder)
+                elif platform.system() == "Darwin":  # macOS
+                    os.system(f"open '{output_folder}'")
+                else:  # Linux
+                    os.system(f"xdg-open '{output_folder}'")
+            except Exception as e:
+                self.log_message(f"⚠️ Could not open output folder: {e}")
+        else:
+            self.log_message("⚠️ Output folder does not exist.")
+            
     def clear_results(self):
         """Clear the results text area"""
         
         self.results_text.delete(1.0, tk.END)
-        self.status_bar.config(text="Results cleared")
-
+        self.log_message("🗑️ Results cleared.")
 
 def main():
-    """Main function to start the GUI"""
-    
-    # Check if required modules are available
-    try:
-        import fitz
-        from reportlab.pdfgen import canvas
-    except ImportError as e:
-        messagebox.showerror(
-            "Missing Dependencies", 
-            f"Required libraries are missing: {e}\n\n"
-            "Please install them using:\n"
-            "pip install PyPDF2 reportlab PyMuPDF pandas"
-        )
-        return
+    """Main function to start the GUI application"""
     
     root = tk.Tk()
-    
-    # macOS-specific fixes
-    if platform.system() == 'Darwin':
-        # Fix for macOS Big Sur and later appearance issues
-        try:
-            root.tk.call('tk', 'scaling', 1.0)
-        except:
-            pass
-        
-        # Ensure proper window creation on macOS
-        root.update_idletasks()
-    
     app = PDFProcessorGUI(root)
-    
-    # Center the window with improved macOS compatibility
-    root.update_idletasks()
-    width = root.winfo_width()
-    height = root.winfo_height()
-    
-    # Get screen dimensions properly on macOS
-    screen_width = root.winfo_screenwidth()
-    screen_height = root.winfo_screenheight()
-    
-    x = (screen_width // 2) - (width // 2)
-    y = (screen_height // 2) - (height // 2)
-    
-    # Ensure window doesn't go off-screen
-    x = max(0, min(x, screen_width - width))
-    y = max(0, min(y, screen_height - height))
-    
-    root.geometry(f"{width}x{height}+{x}+{y}")
-    
-    # Final macOS-specific setup
-    if platform.system() == 'Darwin':
-        root.lift()
-        root.focus_force()
-    
     root.mainloop()
-
 
 if __name__ == "__main__":
     main() 

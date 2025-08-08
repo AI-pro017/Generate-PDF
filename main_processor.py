@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-PDF Statement Processor Module
-Extracted from the main script to work with GUI
+PDF Statement Processor Module - Legacy Compatibility
+This module provides backward compatibility with the original single-bank system
 """
 
 import os
@@ -26,9 +26,16 @@ except ImportError as e:
     print("pip install PyPDF2 reportlab PyMuPDF pandas")
     raise e
 
+# Try to import the new multi-bank system
+try:
+    from processors import get_processor, get_supported_banks
+    MULTI_BANK_AVAILABLE = True
+except ImportError:
+    MULTI_BANK_AVAILABLE = False
+
 
 class PDFStatementProcessor:
-    """Main class for processing PDF bank statements"""
+    """Legacy compatibility class for processing PDF bank statements"""
     
     def __init__(self):
         self.transactions = []
@@ -37,12 +44,25 @@ class PDFStatementProcessor:
         self.beginning_balance = Decimal('0.00')
         self.balance_replacements = []
         self.balance_column_x = None
-        self.balance_column_right = None  # Store the actual right boundary of balance column
+        self.balance_column_right = None
+        
+        # If multi-bank system is available, use it
+        if MULTI_BANK_AVAILABLE:
+            self.mbb_processor = get_processor('MBB')
+        else:
+            self.mbb_processor = None
         
     def extract_transactions_from_pdf(self, pdf_path: str, log_func: Callable = print) -> List[Dict]:
-        """
-        Extract transaction data from Maybank PDF format - Focus on table rows with dates
-        """
+        """Extract transaction data from Maybank PDF format"""
+        if self.mbb_processor:
+            # Use the new multi-bank system
+            return self.mbb_processor.extract_transactions_from_pdf(pdf_path, log_func)
+        else:
+            # Use legacy implementation
+            return self._extract_transactions_from_pdf_legacy(pdf_path, log_func)
+    
+    def _extract_transactions_from_pdf_legacy(self, pdf_path: str, log_func: Callable = print) -> List[Dict]:
+        """Legacy implementation for extracting transaction data"""
         # Store the original PDF path for later use
         self.original_pdf_path = pdf_path
         self.balance_replacements = []  # Reset balance replacements
@@ -235,22 +255,20 @@ class PDFStatementProcessor:
             return None
     
     def _find_beginning_balance_position(self, row_blocks: List[Dict], page_num: int, log_func: Callable):
-        """Find and store the beginning balance position for replacement"""
+        """Find the beginning balance position"""
         for block in row_blocks:
-            text = block["text"].replace(',', '').replace('RM', '').strip()
-            if re.match(r'^\d+\.?\d*$', text):
-                # This is likely the beginning balance value
-                balance_value = self._clean_amount(block["text"])
+            text = block["text"].strip()
+            if re.match(r'^[\d,]+\.?\d*$', text):
                 self.balance_replacements.append({
                     'type': 'beginning_balance',
-                    'original_value': balance_value,
+                    'original_value': self._clean_amount(text),
                     'bbox': block["bbox"],
                     'font_size': block.get("font_size", 12),
                     'font': block.get("font", ""),
                     'page_num': page_num,
-                    'y_position': block["y"]  # Store y-position for sorting
+                    'y_position': block["bbox"][1]
                 })
-                log_func(f"🎯 Found beginning balance: {balance_value} at {block['bbox']}")
+                log_func(f"📍 Found beginning balance position: {text}")
                 break
     
     def _find_balance_position_for_transaction(self, row_blocks: List[Dict], page_num: int, balance_column_x: float, log_func: Callable):
@@ -343,41 +361,9 @@ class PDFStatementProcessor:
         return transactions
     
     def generate_updated_pdf(self, transactions: List[Dict], output_path: str, log_func: Callable = print):
-        """Generate updated PDF by preserving original and replacing all balance values"""
+        """Generate updated PDF with new balance values"""
         try:
-            if not self.original_pdf_path or not os.path.exists(self.original_pdf_path):
-                log_func("❌ Original PDF path not found. Cannot preserve original formatting.")
-                return
-            
-            # Check if output file exists and remove it
-            if os.path.exists(output_path):
-                try:
-                    os.remove(output_path)
-                    log_func(f"🗑️ Removed existing output file: {output_path}")
-                except Exception as e:
-                    log_func(f"⚠️ Could not remove existing file: {e}")
-                    import time
-                    base, ext = os.path.splitext(output_path)
-                    output_path = f"{base}_{int(time.time())}{ext}"
-                    log_func(f"📝 Using alternative filename: {output_path}")
-            
-            log_func("🔄 Creating updated PDF while preserving original formatting and metadata...")
-            
-            # Sort balance replacements by page and y-position
-            self.balance_replacements.sort(key=lambda x: (x['page_num'], x['y_position']))
-            
-            # Calculate all balance values
-            balance_values = [self.beginning_balance]
-            running_balance = self.beginning_balance
-            
-            for transaction in transactions:
-                running_balance += transaction['amount']
-                balance_values.append(running_balance)
-            
-            final_balance = running_balance
-            
-            log_func(f"📊 Will replace {len(self.balance_replacements)} balance positions with {len(balance_values)} calculated values")
-            log_func(f"📊 Final calculated balance: RM {final_balance:,.2f}")
+            log_func("📄 Generating updated PDF...")
             
             # Open the original PDF
             original_pdf = fitz.open(self.original_pdf_path)
@@ -407,90 +393,9 @@ class PDFStatementProcessor:
                 
                 log_func(f"📄 Processing page {page_num + 1} with {len(page_replacements)} balance positions")
                 
-                # Replace balance values on this page
+                # Apply balance replacements
                 for replacement in page_replacements:
-                    if balance_index < len(balance_values):
-                        bbox = replacement['bbox']
-                        
-                        # Format the new balance value
-                        new_balance_str = f"{balance_values[balance_index]:,.2f}"
-                        font_size = replacement.get('font_size', 10)
-                        
-                        # Define the balance column area based on the bbox
-                        # The bbox should already be in the correct column position
-                        column_left = bbox[0]
-                        column_right = bbox[2]
-                        column_top = bbox[1] - 1
-                        column_bottom = bbox[3] + 1
-                        
-                        # Create white rectangle to cover only the balance area
-                        cover_rect = fitz.Rect(column_left - 2, column_top, column_right + 2, column_bottom)
-                        new_page.draw_rect(cover_rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
-                        
-                        # Insert text using textbox for better control
-                        text_rect = fitz.Rect(column_left, column_top, column_right, column_bottom)
-                        
-                        try:
-                            # Try textbox method first
-                            rc = new_page.insert_textbox(
-                                text_rect,
-                                new_balance_str,
-                                fontsize=font_size,
-                                fontname="helv",
-                                align=fitz.TEXT_ALIGN_RIGHT,
-                                color=(0, 0, 0)
-                            )
-                            
-                            if rc < 0:
-                                # Fallback to simple text insertion
-                                # Calculate position for right alignment
-                                char_width = font_size * 0.5
-                                text_width = len(new_balance_str) * char_width
-                                text_x = column_right - text_width - 2
-                                text_y = column_top + font_size
-                                
-                                text_point = fitz.Point(text_x, text_y)
-                                new_page.insert_text(
-                                    text_point,
-                                    new_balance_str,
-                                    fontsize=font_size,
-                                    color=(0, 0, 0),
-                                    fontname="helv"
-                                )
-                            
-                            log_func(f"✅ Placed balance {balance_index + 1}: {new_balance_str} in column [{column_left:.1f}, {column_right:.1f}]")
-                            
-                        except Exception as e:
-                            log_func(f"⚠️ Error placing balance {balance_index + 1}: {e}")
-                        
-                        balance_index += 1
-                
-                # Look for and update ending balance summary on this page
-                self._update_ending_balance_summary(new_page, final_balance, page_num + 1, log_func)
-            
-            # Set metadata on the new PDF before saving
-            log_func("📋 Applying metadata to new PDF...")
-            
-            # Create updated metadata - preserve original but update modification info
-            updated_metadata = {
-                'title': original_metadata.get('title', ''),
-                'author': original_metadata.get('author', ''),
-                'subject': original_metadata.get('subject', ''),
-                'keywords': original_metadata.get('keywords', ''),
-                'creator': original_metadata.get('creator', ''),
-                'producer': original_metadata.get('producer', ''),
-                'creationDate': original_metadata.get('creationDate', ''),
-                'modDate': original_metadata.get('modDate', '')
-            }
-            
-            # Apply metadata to the new PDF
-            new_pdf.set_metadata(updated_metadata)
-            
-            # Log the applied metadata
-            log_func("📋 Applied metadata:")
-            for key, value in updated_metadata.items():
-                if value:
-                    log_func(f"   {key}: {value}")
+                    self._apply_balance_replacement(new_page, replacement, log_func)
             
             # Save the updated PDF
             new_pdf.save(output_path)
@@ -498,192 +403,45 @@ class PDFStatementProcessor:
             original_pdf.close()
             
             log_func(f"✅ Updated PDF saved to: {output_path}")
-            log_func("🎯 Balance values aligned and metadata preserved!")
             
         except Exception as e:
             log_func(f"❌ Error generating updated PDF: {e}")
             import traceback
             traceback.print_exc()
     
-    def _update_ending_balance_summary(self, page, final_balance: Decimal, page_num: int, log_func: Callable):
-        """Find and update the ending balance summary at the bottom of the page"""
+    def _apply_balance_replacement(self, page, replacement: Dict, log_func: Callable):
+        """Apply a balance replacement to a page"""
         try:
-            # Get all text on the page to find ending balance elements
-            text_dict = page.get_text("dict")
+            # Clear the original value
+            cover_rect = fitz.Rect(
+                replacement['bbox'][0] - 3,
+                replacement['bbox'][1] - 2,
+                replacement['bbox'][2] + 3,
+                replacement['bbox'][3] + 2
+            )
+            page.draw_rect(cover_rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
             
-            # Ensure we have the correct final balance from the last transaction
-            if self.transactions:
-                # Get the balance from the last transaction (this is the actual ending balance)
-                actual_final_balance = self.transactions[-1]['new_balance']
-                log_func(f"🎯 Using actual final balance from last transaction: RM {actual_final_balance:,.2f}")
-            else:
-                actual_final_balance = final_balance
-                log_func(f"🎯 Using provided final balance: RM {actual_final_balance:,.2f}")
+            # Calculate the right-aligned position
+            font_size = replacement.get('font_size', 12)
+            char_width = font_size * 0.5
+            text_width = len(str(replacement['new_value'])) * char_width
             
-            # Calculate totals for credit and debit
-            total_credits = sum(t['amount'] for t in self.transactions if t['amount'] > 0)
-            total_debits = sum(abs(t['amount']) for t in self.transactions if t['amount'] < 0)
+            # Position the new text to end where the original text ended
+            text_x = replacement['bbox'][2] - text_width
+            text_y = replacement['bbox'][1] + font_size * 0.8
             
-            log_func(f"📊 Calculated totals - Credits: RM {total_credits:,.2f}, Debits: RM {total_debits:,.2f}")
+            # Insert the new text
+            text_point = fitz.Point(text_x, text_y)
+            page.insert_text(
+                text_point,
+                str(replacement['new_value']),
+                fontsize=font_size,
+                color=(0, 0, 0),
+                fontname="helv"
+            )
             
-            # Find all numeric values in the summary section and replace them directly
-            summary_replacements = []
-            
-            # Look for the summary section (contains ENDING BALANCE, TOTAL CREDIT, TOTAL DEBIT)
-            summary_found = False
-            for block in text_dict["blocks"]:
-                if "lines" in block:
-                    for line in block["lines"]:
-                        for span in line["spans"]:
-                            text = span["text"].strip()
-                            if any(keyword in text.upper() for keyword in ["ENDING BALANCE", "TOTAL CREDIT", "TOTAL DEBIT"]):
-                                summary_found = True
-                                break
-                        if summary_found:
-                            break
-                    if summary_found:
-                        break
-            
-            if not summary_found:
-                log_func("⚠️ Summary section not found on this page")
-                return
-            
-            # Find all numeric values that could be balance values
-            all_numeric_values = []
-            for block in text_dict["blocks"]:
-                if "lines" in block:
-                    for line in block["lines"]:
-                        for span in line["spans"]:
-                            text = span["text"].strip()
-                            bbox = span["bbox"]
-                            
-                            # Check if it's a numeric value (including negative and with commas)
-                            if re.match(r'^-?\d{1,3}(,\d{3})*\.\d{2}$', text):
-                                # Only consider values in the right portion of the page (likely balance columns)
-                                if bbox[0] > page.rect.width * 0.4:
-                                    all_numeric_values.append({
-                                        'text': text,
-                                        'bbox': bbox,
-                                        'font_size': span.get("size", 10),
-                                        'x': bbox[0],
-                                        'y': bbox[1]
-                                    })
-            
-            # Sort by Y position to get them in order (top to bottom)
-            all_numeric_values.sort(key=lambda v: v['y'])
-            
-            log_func(f"📋 Found {len(all_numeric_values)} numeric values in summary area:")
-            for i, val in enumerate(all_numeric_values):
-                log_func(f"   {i+1}. {val['text']} at y={val['y']:.1f}")
-            
-            # Now find which values correspond to which labels
-            balance_mappings = []
-            
-            for block in text_dict["blocks"]:
-                if "lines" in block:
-                    for line in block["lines"]:
-                        for span in line["spans"]:
-                            text = span["text"].strip()
-                            bbox = span["bbox"]
-                            
-                            if "ENDING BALANCE" in text.upper():
-                                # Find numeric value on the same row
-                                for val in all_numeric_values:
-                                    if abs(val['y'] - bbox[1]) <= 5:  # Same row
-                                        balance_mappings.append({
-                                            'label': 'ENDING BALANCE',
-                                            'original_value': val,
-                                            'new_value': f"{actual_final_balance:,.2f}" if actual_final_balance >= 0 else f"-{abs(actual_final_balance):,.2f}"
-                                        })
-                                        break
-                                        
-                            elif "TOTAL CREDIT" in text.upper():
-                                # Find numeric value on the same row
-                                for val in all_numeric_values:
-                                    if abs(val['y'] - bbox[1]) <= 5:  # Same row
-                                        balance_mappings.append({
-                                            'label': 'TOTAL CREDIT',
-                                            'original_value': val,
-                                            'new_value': f"{total_credits:,.2f}"
-                                        })
-                                        break
-                                        
-                            elif "TOTAL DEBIT" in text.upper():
-                                # Find numeric value on the same row
-                                for val in all_numeric_values:
-                                    if abs(val['y'] - bbox[1]) <= 5:  # Same row
-                                        balance_mappings.append({
-                                            'label': 'TOTAL DEBIT',
-                                            'original_value': val,
-                                            'new_value': f"{total_debits:,.2f}"
-                                        })
-                                        break
-            
-            # Perform the replacements
-            for mapping in balance_mappings:
-                original = mapping['original_value']
-                new_value = mapping['new_value']
-                label = mapping['label']
-                
-                log_func(f"🔄 Replacing {label}: {original['text']} → {new_value}")
-                
-                # Clear the original value
-                cover_rect = fitz.Rect(
-                    original['bbox'][0] - 3,
-                    original['bbox'][1] - 2,
-                    original['bbox'][2] + 3,
-                    original['bbox'][3] + 2
-                )
-                page.draw_rect(cover_rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
-                
-                # Calculate the right-aligned position
-                font_size = original['font_size']
-                char_width = font_size * 0.5
-                text_width = len(new_value) * char_width
-                
-                # Position the new text to end where the original text ended
-                text_x = original['bbox'][2] - text_width
-                text_y = original['bbox'][1] + font_size * 0.8
-                
-                # Insert the new text
-                try:
-                    text_point = fitz.Point(text_x, text_y)
-                    page.insert_text(
-                        text_point,
-                        new_value,
-                        fontsize=font_size,
-                        color=(0, 0, 0),
-                        fontname="helv"
-                    )
-                    log_func(f"✅ Successfully replaced {label}: {original['text']} → {new_value}")
-                    
-                except Exception as e:
-                    log_func(f"⚠️ Error replacing {label}: {e}")
-                    
-                    # Try alternative method with textbox
-                    try:
-                        text_rect = fitz.Rect(
-                            original['bbox'][0] - 10,
-                            original['bbox'][1] - 1,
-                            original['bbox'][2] + 10,
-                            original['bbox'][3] + 1
-                        )
-                        page.insert_textbox(
-                            text_rect,
-                            new_value,
-                            fontsize=font_size,
-                            fontname="helv",
-                            align=fitz.TEXT_ALIGN_RIGHT,
-                            color=(0, 0, 0)
-                        )
-                        log_func(f"✅ Successfully replaced {label} using textbox method")
-                    except Exception as e2:
-                        log_func(f"❌ Failed to replace {label}: {e2}")
-                    
         except Exception as e:
-            log_func(f"⚠️ Error updating ending balance summary on page {page_num}: {e}")
-            import traceback
-            traceback.print_exc()
+            log_func(f"⚠️ Error applying balance replacement: {e}")
     
     def process_statement_gui(self, input_pdf: str, output_pdf: str, beginning_balance: float, log_func: Callable):
         """Main processing function for GUI"""
@@ -714,4 +472,4 @@ class PDFStatementProcessor:
         
         log_func("=" * 50)
         log_func("✅ Processing completed successfully!")
-        return True 
+        return True
