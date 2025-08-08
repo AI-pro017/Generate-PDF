@@ -21,6 +21,7 @@ class HLBProcessor(BaseProcessor):
         self.bank_name = "Hong Leong Bank (HLB)"
         # carry pending amount across pages (rows without visible balance)
         self._carry = Decimal('0.00')
+        self._hlb_balance_right_edge = None
     def _is_amount_text(self, text: str) -> bool:
         t = text.strip()
         # must contain decimals; reject integers and long IDs
@@ -224,6 +225,9 @@ class HLBProcessor(BaseProcessor):
                         "font": balance_blk.get("font",""), "page_num": page_num, "y_position": balance_blk["bbox"][1]
                     })
                     pending = Decimal('0.00')
+                    # Track the right edge of the Balance column for precise right-alignment later
+                    x2 = balance_blk["bbox"][2]
+                    self._hlb_balance_right_edge = x2 if self._hlb_balance_right_edge is None else max(self._hlb_balance_right_edge, x2)
 
             self._carry = pending
 
@@ -233,6 +237,7 @@ class HLBProcessor(BaseProcessor):
         return transactions
 
     def _find_summary_positions_hlb(self, text_dict: dict, page_num: int, log_func: Callable):
+        """Find 'Closing Balance / Baki Akhir' and replace using the detected Balance column right edge."""
         try:
             blocks = []
             for b in text_dict.get("blocks", []):
@@ -241,41 +246,79 @@ class HLBProcessor(BaseProcessor):
                         tx = sp["text"].strip()
                         if not tx:
                             continue
-                        x0,y0,x1,y1 = sp["bbox"]
-                        blocks.append({"text": tx, "x": x0, "y": y0, "bbox": [x0,y0,x1,y1],
-                                       "font_size": sp.get("size",12), "font": sp.get("font","")})
+                        x0, y0, x1, y1 = sp["bbox"]
+                        blocks.append({
+                            "text": tx, "x": x0, "y": y0, "bbox": [x0, y0, x1, y1],
+                            "font_size": sp.get("size", 12), "font": sp.get("font", "")
+                        })
 
-            headers = self._locate_headers(blocks)
-            balance_x = headers["BALANCE"] if headers and "BALANCE" in headers else None
-
+            # Tolerance for same-baseline grouping
             y_tol = 8
-            for blk in blocks:
-                norm = self._norm(blk["text"])
-                if norm in {"CLOSINGBALANCE","BAKIAKHIR"}:
-                    candidates = []
-                    for b in blocks:
-                        if b["x"] > blk["x"] and abs(b["y"] - blk["y"]) <= y_tol and self._is_amount_text(b["text"]):
-                            score = abs(b["x"] - balance_x) if balance_x is not None else -b["x"]
-                            candidates.append((b, self._clean_num_text(b["text"]), score))
-                    if not candidates:
-                        continue
-                    # nearest to balance_x; if no balance_x, pick rightmost (largest x)
-                    target, num_val, _ = min(candidates, key=lambda t: t[2]) if balance_x is not None else max(candidates, key=lambda t: t[0]["x"])
 
-                    x0,y0,x1,y1 = target["bbox"]
-                    expanded = [x0-14, y0-6, x1+14, y1+6]  # ensure clear area is large
+            def is_num_fragment(t: str) -> bool:
+                return bool(re.match(r'^-?[\d,\.]+$', t.strip()))
 
-                    self.balance_replacements.append({
-                        "type":"ending_balance",
-                        "original_value": num_val,
-                        "bbox": expanded,
-                        "font_size": target.get("font_size",12),
-                        "font": target.get("font",""),
-                        "page_num": page_num,
-                        "y_position": y0
-                    })
-                    log_func(f"📍 Found closing balance position: {target['text']}")
-                    break
+            for lbl in blocks:
+                if self._norm(lbl["text"]) not in {"CLOSINGBALANCE", "BAKIAKHIR"}:
+                    continue
+
+                # Collect numeric fragments on same row (to the right of label)
+                fragments = [b for b in blocks
+                             if b["x"] > lbl["x"]
+                             and abs(b["y"] - lbl["y"]) <= y_tol
+                             and is_num_fragment(b["text"])]
+
+                if not fragments:
+                    log_func(f"⚠️ HLB: No numeric found on closing balance row p{page_num}")
+                    continue
+
+                fragments.sort(key=lambda b: b["x"])
+                x0 = min(b["bbox"][0] for b in fragments)
+                y0 = min(b["bbox"][1] for b in fragments)
+                x1 = max(b["bbox"][2] for b in fragments)
+                y1 = max(b["bbox"][3] for b in fragments)
+
+                merged_text = "".join(b["text"] for b in fragments).replace(" ", "")
+                amount_val = self._clean_num_text(merged_text)
+                if amount_val is None:
+                    # fallback to rightmost valid fragment
+                    for b in reversed(fragments):
+                        amount_val = self._clean_num_text(b["text"])
+                        if amount_val is not None:
+                            break
+                if amount_val is None:
+                    log_func(f"⚠️ HLB: Could not parse closing balance on p{page_num}, text='{merged_text}'")
+                    continue
+
+                # Anchor the right edge to the Balance column's detected right edge for perfect alignment
+                right_edge = self._hlb_balance_right_edge if self._hlb_balance_right_edge else x1
+                right_edge = max(right_edge, x1)  # never smaller than detected fragments
+
+                # AFTER: preserve top y0 so baseline stays correct; expand sides/bottom only
+                pad_left_right = 16
+                pad_bottom = 8
+                expanded = [x0 - pad_left_right, y0, right_edge, y1 + pad_bottom]
+
+                # Tight vertical cover: keep top at y0, bottom just around the glyph height
+                # This avoids painting over the horizontal rule below the row.
+                pad_lr = 8
+                fs = fragments[-1].get("font_size", 12)
+                # bottom limited to about one text-height from the top; do NOT expand downward
+                bottom = min(y1, y0 + fs * 1.05)
+                expanded = [x0 - pad_lr, y0, right_edge, bottom]
+
+                log_func(f"🔎 HLB Closing Balance p{page_num}: value={amount_val}, right_edge={right_edge:.2f}, bbox={expanded}")
+
+                self.balance_replacements.append({
+                    "type": "ending_balance",
+                    "original_value": amount_val,
+                    "bbox": expanded,
+                    "font_size": fragments[-1].get("font_size", 12),
+                    "font": fragments[-1].get("font", ""),
+                    "page_num": page_num,
+                    "y_position": y0
+                })
+                break
         except Exception as e:
             log_func(f"⚠️ Error finding HLB closing balance: {e}")
 
