@@ -212,9 +212,25 @@ class BaseProcessor(ABC):
                 
                 log_func(f"📄 Processing page {page_num + 1} with {len(page_replacements)} balance positions")
                 
-                # Apply balance replacements
-                for replacement in page_replacements:
-                    self._apply_balance_replacement(new_page, replacement, log_func)
+                # 1) ERASE PHASE: add redactions filled with the original row color
+                for rep in page_replacements:
+                    erase_r = self._erase_rect(new_page, rep['bbox'])
+                    bg = self._bg_for(new_page, rep['bbox'], rep.get('bg_color'))
+                    # add redact annotation (removes text and chip regardless of draw order)
+                    new_page.add_redact_annot(erase_r, fill=bg)
+
+                # commit all redactions once per page
+                new_page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+
+                # 2) DRAW PHASE: write the new numbers, right‑aligned
+                for rep in page_replacements:
+                    font_size = rep.get('font_size', 12)
+                    text = str(rep['new_value'])
+                    char_w = font_size * 0.5
+                    text_w = len(text) * char_w
+                    x = rep['bbox'][2] - text_w
+                    y = rep['bbox'][1] + font_size * 0.8
+                    new_page.insert_text(fitz.Point(x, y), text, fontsize=font_size, color=(0,0,0), fontname="helv")
             
             # Save the updated PDF
             new_pdf.save(output_path)
@@ -229,38 +245,183 @@ class BaseProcessor(ABC):
             traceback.print_exc()
     
     def _apply_balance_replacement(self, page, replacement: Dict, log_func: Callable):
-        """Apply a balance replacement to a page - common implementation"""
         try:
-            # Clear the original value
-            cover_rect = fitz.Rect(
-                replacement['bbox'][0] - 3,
-                replacement['bbox'][1] - 2,
-                replacement['bbox'][2] + 3,
-                replacement['bbox'][3] + 2
+            import fitz
+            # 1) ERASE
+            erase = fitz.Rect(*replacement['bbox'])
+            # Clamp erase rect to page; prevents overflow into side margin
+            page_rect = page.rect
+            erase = fitz.Rect(
+                max(page_rect.x0, erase.x0),
+                max(page_rect.y0, erase.y0),
+                min(page_rect.x1, erase.x1),
+                min(page_rect.y1, erase.y1),
             )
-            page.draw_rect(cover_rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
-            
-            # Calculate the right-aligned position
+            bg = replacement.get('bg_color') or (1,1,1)
+            page.draw_rect(erase, color=bg, fill=bg, width=0)
+
+            # 2) DRAW (right-aligned to original column edge)
+            text = str(replacement['new_value'])
             font_size = replacement.get('font_size', 12)
-            char_width = font_size * 0.5
-            text_width = len(str(replacement['new_value'])) * char_width
-            
-            # Position the new text to end where the original text ended
-            text_x = replacement['bbox'][2] - text_width
-            text_y = replacement['bbox'][1] + font_size * 0.8
-            
-            # Insert the new text
-            text_point = fitz.Point(text_x, text_y)
-            page.insert_text(
-                text_point,
-                str(replacement['new_value']),
+            font_name = replacement.get('font', 'helv') or 'helv'
+
+            right_edge = replacement.get('anchor_right', replacement['bbox'][2])
+            y0 = replacement.get('text_y0', replacement['bbox'][1])
+            y1 = replacement.get('text_y1', replacement['bbox'][3])
+
+            # Keep box inside page; adequate width for any value
+            box_w = 160.0
+            x0 = max(page_rect.x0, right_edge - box_w)
+            text_rect = fitz.Rect(x0, y0 - 1, right_edge, y1 + 1)
+
+            page.insert_textbox(
+                text_rect,
+                text,
                 fontsize=font_size,
+                fontname=font_name,
                 color=(0, 0, 0),
-                fontname="helv"
+                align=fitz.TEXT_ALIGN_RIGHT
             )
-            
         except Exception as e:
             log_func(f"⚠️ Error applying balance replacement: {e}")
+
+    def _row_bg_color(self, page, bbox):
+        try:
+            x0, y0, x1, y1 = bbox
+            W = page.rect.width
+
+            # horizontal band across the row, left of the balance cell (avoids digits)
+            band_left  = max(16, W * 0.12)
+            band_right = max(band_left + 6, min(W * 0.70, x0 - 8))
+            band_top   = y0 + (y1 - y0) * 0.25
+            band_bot   = y1 - (y1 - y0) * 0.25
+            r = fitz.Rect(band_left, band_top, band_right, band_bot)
+
+            pix = page.get_pixmap(clip=r, alpha=False)
+            data, n = pix.samples, pix.n
+
+            # mean of non‑dark pixels (ignore ink/borders)
+            R = G = B = cnt = 0
+            for i in range(0, len(data), n):
+                r8, g8, b8 = data[i], data[i+1], data[i+2]
+                if r8 + g8 + b8 < 120:
+                    continue
+                R += r8; G += g8; B += b8; cnt += 1
+            if cnt == 0:
+                return (1, 1, 1)
+
+            rN, gN, bN = R/cnt/255.0, G/cnt/255.0, B/cnt/255.0
+
+            # snap to canonical blue/white to avoid greys
+            blue_score = bN - max(rN, gN)
+            luma = 0.2126*rN + 0.7152*gN + 0.0722*bN
+            if blue_score > 0.10 and luma < 0.97:
+                return (0.86, 0.92, 0.97)  # row blue
+            return (1.0, 1.0, 1.0)         # white
+        except Exception:
+            return (1, 1, 1)
+    
+    def _find_vector_bg(self, page, bbox):
+        """Look for a filled vector band (row fill) that covers this bbox."""
+        try:
+            best = None
+            best_overlap = 0.0
+            cell = fitz.Rect(bbox)
+            for d in page.get_drawings():
+                fill = d.get("fill")
+                if not fill:
+                    continue
+                r = d.get("rect")
+                if not r:
+                    continue
+                if r.width < 60 or r.height < 8:  # ignore small glyph backgrounds
+                    continue
+                inter = cell & r
+                if inter.is_empty:
+                    continue
+                overlap = inter.get_area()/cell.get_area()
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best = fill
+            return best  # (r,g,b) in 0..1
+        except Exception:
+            return None
+
+    def _find_chip_rect(self, page, bbox):
+        """
+        Find the small grey rounded-rect chip UOB places behind numbers and
+        return a union rect that fully covers it so we can repaint with row color.
+        """
+        try:
+            cell = fitz.Rect(bbox)
+            best = None
+            best_area = 0.0
+            for d in page.get_drawings():
+                fill = d.get("fill")
+                r = d.get("rect")
+                if not fill or not r:
+                    continue
+                # grey-ish (low saturation), roughly same height as number area, overlaps the number
+                if abs(fill[0]-fill[1]) < 0.03 and abs(fill[1]-fill[2]) < 0.03 and fill[0] < 0.95:
+                    inter = cell & r
+                    if inter.is_empty:
+                        continue
+                    # height comparable
+                    if 0.7*cell.height <= r.height <= 1.8*cell.height:
+                        area = r.get_area()
+                        if area > best_area:
+                            best_area = area
+                            best = r
+            if best:
+                return (cell | best)
+            return cell
+        except Exception:
+            return fitz.Rect(bbox)
+
+    def _sample_row_bg(self, page, bbox):
+        try:
+            x0,y0,x1,y1 = bbox
+            W = page.rect.width
+            band_left  = max(16, W*0.12)
+            band_right = max(band_left+6, min(W*0.70, x0-8))
+            band_top   = y0 + (y1-y0)*0.25
+            band_bot   = y1 - (y1-y0)*0.25
+            r = fitz.Rect(band_left, band_top, band_right, band_bot)
+            pix = page.get_pixmap(clip=r, alpha=False)
+            data,n = pix.samples, pix.n
+            R=G=B=cnt=0
+            for i in range(0,len(data),n):
+                r8,g8,b8 = data[i], data[i+1], data[i+2]
+                if r8+g8+b8 < 120:  # ignore ink/borders
+                    continue
+                R+=r8; G+=g8; B+=b8; cnt+=1
+            if not cnt:
+                return (1,1,1)
+            rN,gN,bN = R/cnt/255.0, G/cnt/255.0, B/cnt/255.0
+            blue_score = bN - max(rN,gN)
+            luma = 0.2126*rN + 0.7152*gN + 0.0722*bN
+            return (0.86,0.92,0.97) if (blue_score>0.10 and luma<0.97) else (1.0,1.0,1.0)
+        except Exception:
+            return (1,1,1)
+    
+    def _erase_rect(self, page, bbox):
+        # Enlarge just enough to fully cover UOB-style “chip” behind digits
+        import fitz
+        x0, y0, x1, y1 = bbox
+        pad_x = 10   # widen L/R to cover the capsule
+        pad_t = 0
+        pad_b = 3
+        r = fitz.Rect(x0 - pad_x, y0 - pad_t, x1 + pad_x, y1 + pad_b)
+        # clamp to page
+        pr = page.rect
+        r.x0 = max(pr.x0, r.x0); r.y0 = max(pr.y0, r.y0)
+        r.x1 = min(pr.x1, r.x1); r.y1 = min(pr.y1, r.y1)
+        return r
+
+    def _bg_for(self, page, bbox, hint):
+        # pick background color: hint → vector band → row sample
+        bg = hint or self._find_vector_bg(page, bbox) or self._sample_row_bg(page, bbox)
+        return bg
     
     def process_statement_gui(self, input_pdf: str, output_pdf: str, beginning_balance: float, log_func: Callable):
         """Main processing function for GUI - common implementation"""
