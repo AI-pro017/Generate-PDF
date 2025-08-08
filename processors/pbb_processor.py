@@ -19,13 +19,24 @@ class PBBProcessor(BaseProcessor):
     def __init__(self):
         super().__init__()
         self.bank_name = "Public Bank (PBB)"
+        # keep right edge of balance column for better alignment if needed later
+        self._balance_right_edge = None
+
+    def _is_amount_text(self, text: str) -> bool:
+        t = text.strip().replace("RM", "")
+        if not t:
+            return False
+        return bool(re.match(r'^-?\d{1,3}(,\d{3})*(\.\d{2})$|-?\d+\.\d{2}$', t))
+
+    def _norm(self, s: str) -> str:
+        return re.sub(r'[^A-Z]', '', s.upper())
     
     def extract_transactions_from_pdf(self, pdf_path: str, log_func: Callable = print) -> List[Dict]:
         """Extract transaction data from PBB PDF format"""
         self.original_pdf_path = pdf_path
         self.balance_replacements = []
         
-        transactions = []
+        transactions: List[Dict] = []
         
         try:
             pdf_document = fitz.open(pdf_path)
@@ -33,17 +44,137 @@ class PBBProcessor(BaseProcessor):
             log_func(f"📄 Processing {self.bank_name} PDF: {os.path.basename(pdf_path)}")
             log_func(f"📊 Total pages: {len(pdf_document)}")
             
-            # TODO: Implement PBB-specific extraction logic
-            log_func("⚠️ PBB processor not yet implemented - extracting PDF content for analysis...")
-            
             for page_num in range(len(pdf_document)):
                 page = pdf_document.load_page(page_num)
                 text_dict = page.get_text("dict")
-                
-                log_func(f"📃 Page {page_num + 1} - Analyzing PBB structure...")
-                
-                # Extract and log content for analysis
-                self._analyze_pbb_structure(text_dict, page_num + 1, log_func)
+
+                # Flatten text blocks
+                blocks: List[Dict] = []
+                for b in text_dict.get("blocks", []):
+                    for ln in b.get("lines", []):
+                        for sp in ln.get("spans", []):
+                            tx = sp.get("text", "").strip()
+                            if not tx:
+                                continue
+                            x0, y0, x1, y1 = sp.get("bbox")
+                            blocks.append({
+                                "text": tx,
+                                "x": x0,
+                                "y": y0,
+                                "bbox": [x0, y0, x1, y1],
+                                "font_size": sp.get("size", 12),
+                                "font": sp.get("font", "")
+                            })
+
+                blocks.sort(key=lambda b: (b["y"], b["x"]))
+
+                # 1) Summary: "Baki Penutup / Closing Balance" → replace with user input (type=beginning_balance)
+                self._add_summary_closing_replacement(blocks, page_num + 1, log_func)
+
+                # 2) Locate table headers and parse rows
+                hdr = self._locate_headers(blocks)
+                if not hdr:
+                    continue
+                deb_x, cre_x, bal_x = hdr["DEBIT"], hdr["CREDIT"], hdr["BALANCE"]
+                table_top_y = hdr.get("_TABLE_TOP_Y", None)
+
+                midDC = (deb_x + cre_x) / 2.0
+                midCB = (cre_x + bal_x) / 2.0
+                def col_of(x: float) -> str:
+                    if x < midDC: return "DEBIT"
+                    if x < midCB: return "CREDIT"
+                    return "BALANCE"
+
+                # tighter row grouping
+                rows: List[List[Dict]] = []
+                cur: List[Dict] = []
+                last_y = None
+                y_tol = 3
+                for bl in blocks:
+                    if last_y is None or abs(bl["y"] - last_y) <= y_tol:
+                        cur.append(bl)
+                    else:
+                        if cur:
+                            rows.append(cur)
+                        cur = [bl]
+                    last_y = bl["y"]
+                if cur:
+                    rows.append(cur)
+
+                for row in rows:
+                    row.sort(key=lambda b: b["x"])
+                    if not row:
+                        continue
+                    row_y = min(b["y"] for b in row)
+                    if table_top_y is not None and row_y < table_top_y + 5:
+                        # above header band
+                        continue
+
+                    row_text_norm = self._norm(" ".join(b["text"] for b in row))
+                    is_closing_row = any(k in row_text_norm for k in [
+                        "CLOSINGBALANCEINTHISSTATEMENT", "CLOSINGBALANCE", "BAKIPENUTUP"
+                    ])
+
+                    debit_val: Optional[Decimal] = None
+                    credit_val: Optional[Decimal] = None
+                    balance_blk: Optional[Dict] = None
+
+                    for b in row:
+                        t = b["text"].replace(" ", "")
+                        if self._is_amount_text(t):
+                            c = col_of(b["x"])
+                            if c == "DEBIT":
+                                debit_val = Decimal(t.replace(",", ""))
+                            elif c == "CREDIT":
+                                credit_val = Decimal(t.replace(",", ""))
+                            else:
+                                balance_blk = b
+
+                    # Closing summary row inside table: replace directly with user input
+                    if is_closing_row and balance_blk is not None:
+                        self.balance_replacements.append({
+                            "type": "beginning_balance",  # will be set to GUI-entered value
+                            "original_value": Decimal('0.00'),
+                            "bbox": balance_blk["bbox"],
+                            "font_size": balance_blk.get("font_size", 12),
+                            "font": balance_blk.get("font", ""),
+                            "page_num": page_num + 1,
+                            "y_position": balance_blk["bbox"][1]
+                        })
+                        continue
+
+                    # Regular data row or B/F, C/F balances
+                    if balance_blk is None and (debit_val is None and credit_val is None):
+                        continue
+
+                    # Track balance column right edge for alignment
+                    if balance_blk is not None:
+                        x2 = balance_blk["bbox"][2]
+                        self._balance_right_edge = x2 if self._balance_right_edge is None else max(self._balance_right_edge, x2)
+
+                    # record replacement for the balance cell on this row
+                    if balance_blk is not None:
+                        self.balance_replacements.append({
+                            "type": "transaction_balance",
+                            "original_value": Decimal('0.00'),
+                            "bbox": balance_blk["bbox"],
+                            "font_size": balance_blk.get("font_size", 12),
+                            "font": balance_blk.get("font", ""),
+                            "page_num": page_num + 1,
+                            "y_position": balance_blk["bbox"][1]
+                        })
+
+                    # store a logical transaction used for later balance computation (bottom-up)
+                    transactions.append({
+                        "date": "",  # PBB balance calc does not require the date
+                        "description": "",
+                        "amount": (debit_val or Decimal('0.00')) - (credit_val or Decimal('0.00')),
+                        "debit": debit_val or Decimal('0.00'),
+                        "credit": credit_val or Decimal('0.00'),
+                        "new_balance": Decimal('0.00'),
+                        "page_num": page_num + 1,
+                        "y_position": balance_blk["bbox"][1] if balance_blk else row_y
+                    })
             
             pdf_document.close()
             
@@ -53,68 +184,106 @@ class PBBProcessor(BaseProcessor):
             traceback.print_exc()
             return []
         
-        log_func(f"✅ PBB analysis completed - {len(transactions)} transactions found")
+        log_func(f"✅ Extracted {len(transactions)} PBB rows to compute balances")
         return transactions
     
     def _analyze_pbb_structure(self, text_dict: dict, page_num: int, log_func: Callable):
-        """Analyze PBB PDF structure for implementation"""
-        try:
-            all_blocks = []
-            
-            for block in text_dict["blocks"]:
-                if "lines" in block:
-                    for line in block["lines"]:
-                        for span in line["spans"]:
-                            text = span["text"].strip()
-                            if text:
-                                bbox = span["bbox"]
-                                all_blocks.append({
-                                    "text": text,
-                                    "x": bbox[0],
-                                    "y": bbox[1],
-                                    "bbox": bbox,
-                                    "font_size": span.get("size", 12),
-                                    "font": span.get("font", "")
-                                })
-            
-            # Log structure for analysis
-            log_func(f"🔍 PBB Page {page_num} structure analysis:")
-            log_func(f"   Total text blocks: {len(all_blocks)}")
-            
-            # Find potential headers
-            headers = [b for b in all_blocks if any(keyword in b["text"].upper() for keyword in 
-                      ["BALANCE", "AMOUNT", "DATE", "DESCRIPTION", "DEBIT", "CREDIT"])]
-            
-            if headers:
-                log_func(f"   Potential headers found: {[h['text'] for h in headers[:5]]}")
-            
-            # Find potential dates
-            dates = [b for b in all_blocks if self._is_date(b["text"])]
-            if dates:
-                log_func(f"   Potential dates found: {[d['text'] for d in dates[:3]]}")
-            
-            # Find potential amounts
-            amounts = [b for b in all_blocks if re.match(r'^[\d,]+\.?\d*$', b["text"].replace(',', ''))]
-            if amounts:
-                log_func(f"   Potential amounts found: {[a['text'] for a in amounts[:3]]}")
-            
-        except Exception as e:
-            log_func(f"⚠️ Error analyzing PBB structure: {e}")
+        pass
     
     def _extract_transactions_and_balances(self, text_dict: dict, page_num: int, log_func: Callable) -> List[Dict]:
-        """Extract transactions and find all balance values - PBB implementation"""
-        # TODO: Implement PBB-specific extraction
-        log_func("⚠️ PBB transaction extraction not yet implemented")
+        # Not used; logic handled in extract_transactions_from_pdf
         return []
     
     def _find_balance_column_position(self, all_blocks: List[Dict], log_func: Callable) -> float:
-        """Find the x-position of the balance column for PBB"""
-        # TODO: Implement PBB-specific balance column detection
-        log_func("⚠️ PBB balance column detection not yet implemented")
-        return 0
+        headers = self._locate_headers(all_blocks)
+        if headers and "BALANCE" in headers:
+            return headers["BALANCE"]
+        return 0.0
     
     def _parse_transaction_row(self, row_blocks: List[Dict], page_num: int, balance_column_x: float, log_func: Callable) -> Optional[Dict]:
-        """Parse a transaction row for PBB format"""
-        # TODO: Implement PBB-specific transaction parsing
-        log_func("⚠️ PBB transaction parsing not yet implemented")
         return None
+
+    def _locate_headers(self, blocks: List[Dict]) -> Optional[Dict[str, float]]:
+        header_x, header_y = {}, {}
+        for b in blocks:
+            t = b["text"].upper().strip()
+            if t in ("DEBIT",):
+                header_x["DEBIT"] = b["x"]; header_y["DEBIT"] = b["y"]
+            elif t in ("KREDIT", "CREDIT"):
+                header_x["CREDIT"] = b["x"]; header_y["CREDIT"] = b["y"]
+            elif t in ("BAKI", "BALANCE"):
+                header_x["BALANCE"] = b["x"]; header_y["BALANCE"] = b["y"]
+        if all(k in header_x for k in ("DEBIT", "CREDIT", "BALANCE")):
+            header_x["_TABLE_TOP_Y"] = min(header_y.values()) if header_y else None
+            return header_x
+        return None
+
+    def _add_summary_closing_replacement(self, blocks: List[Dict], page_num: int, log_func: Callable):
+        try:
+            y_tol = 8
+            for lbl in blocks:
+                if self._norm(lbl["text"]) not in {"BAKIPENUTUP", "CLOSINGBALANCE"}:
+                    continue
+                # collect numeric fragments on same row to the right
+                frags = [b for b in blocks if b["x"] > lbl["x"] and abs(b["y"] - lbl["y"]) <= y_tol and self._is_amount_text(b["text"]) ]
+                if not frags:
+                    continue
+                frags.sort(key=lambda b: b["x"])
+                x0 = min(f["bbox"][0] for f in frags)
+                y0 = min(f["bbox"][1] for f in frags)
+                x1 = max(f["bbox"][2] for f in frags)
+                y1 = max(f["bbox"][3] for f in frags)
+                self.balance_replacements.append({
+                    "type": "beginning_balance",  # use GUI input
+                    "original_value": Decimal('0.00'),
+                    "bbox": [x0, y0, x1, y1],
+                    "font_size": frags[-1].get("font_size", 12),
+                    "font": frags[-1].get("font", ""),
+                    "page_num": page_num,
+                    "y_position": y0
+                })
+                break
+        except Exception:
+            pass
+
+    # Override balance recomputation for PBB: start from closing balance (GUI input)
+    def recalculate_balances(self, transactions: List[Dict], beginning_balance: Decimal, log_func: Callable = print) -> List[Dict]:
+        try:
+            closing_balance = beginning_balance
+            # Compute from bottom (last page, bottom row) upward
+            ordered = sorted(transactions, key=lambda t: (t['page_num'], t.get('y_position', 0)))
+            rev = list(reversed(ordered))
+
+            running = closing_balance
+            total_credit = Decimal('0.00')
+            total_debit = Decimal('0.00')
+            computed = []
+            for t in rev:
+                debit = t.get('debit', Decimal('0.00')) or Decimal('0.00')
+                credit = t.get('credit', Decimal('0.00')) or Decimal('0.00')
+                running = (running + debit - credit).quantize(Decimal('0.01'))
+                ct = dict(t)
+                ct['new_balance'] = running
+                computed.append(ct)
+                total_debit += debit
+                total_credit += credit
+
+            # Restore top-to-bottom order for mapping to replacements
+            computed = list(reversed(computed))
+
+            # Logging similar to base
+            log_func(f"💰 Closing balance (input): RM {closing_balance:,.2f}")
+            log_func("=" * 90)
+            log_func(f"{'#':<3} {'Page':<4} {'Y':<7} {'Debit':>12} {'Credit':>12} {'New Balance':>15}")
+            log_func("=" * 90)
+            for i, t in enumerate(computed, 1):
+                log_func(f"{i:<3} {t['page_num']:<4} {int(t.get('y_position',0)):<7} "
+                        f"{t.get('debit',Decimal('0.00')):>12,.2f} {t.get('credit',Decimal('0.00')):>12,.2f} "
+                        f"{t['new_balance']:>15,.2f}")
+            log_func("=" * 90)
+            log_func(f"Totals  Debit: RM {total_debit:,.2f}   Credit: RM {total_credit:,.2f}")
+
+            return computed
+        except Exception as e:
+            log_func(f"⚠️ Error recalculating PBB balances: {e}")
+            return transactions
