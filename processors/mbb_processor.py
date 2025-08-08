@@ -116,6 +116,33 @@ class MBBProcessor(BaseProcessor):
             traceback.print_exc()
         
         return transactions
+
+    # Override erase box just for MBB so we don't wipe the right table rule
+    def _erase_rect(self, page, bbox):
+        """Return a tighter erase rectangle for MBB numbers.
+
+        - Keep height unchanged (do not touch horizontal rules)
+        - Shift the right edge slightly left so the vertical border line remains
+        - Small left padding to fully cover any light background behind digits
+        """
+        import fitz
+        x0, y0, x1, y1 = bbox
+        left_pad = 6.0
+        right_inset = 2.0
+
+        rx0 = x0 - left_pad
+        rx1 = x1 - right_inset
+        if rx1 <= rx0 + 1.0:
+            rx1 = rx0 + 1.0
+
+        r = fitz.Rect(rx0, y0, rx1, y1)
+
+        pr = page.rect
+        r.x0 = max(pr.x0, r.x0)
+        r.y0 = max(pr.y0, r.y0)
+        r.x1 = min(pr.x1, r.x1)
+        r.y1 = min(pr.y1, r.y1)
+        return r
     
     def _find_balance_column_position(self, all_blocks: List[Dict], log_func: Callable) -> float:
         """Find the x-position of the balance column for Maybank"""
