@@ -11,6 +11,8 @@ from .hlb_processor import HLBProcessor
 from .rhb_processor import RHBProcessor
 from .ocbc_processor import OCBCProcessor
 from .uob_processor import UOBProcessor
+from .alb_processor import ALBProcessor
+from .gxb_processor import GXBProcessor
 
 # Bank processor registry
 BANK_PROCESSORS = {
@@ -20,6 +22,8 @@ BANK_PROCESSORS = {
     'RHB': RHBProcessor,
     'OCBC': OCBCProcessor,
     'UOB': UOBProcessor
+    ,'ALB': ALBProcessor
+    ,'GXB': GXBProcessor
 }
 
 def get_processor(bank_code: str) -> BaseProcessor:

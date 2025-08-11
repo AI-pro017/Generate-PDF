@@ -554,6 +554,13 @@ class PDFProcessorGUI:
             input_file = self.input_file_var.get()
             beginning_balance = float(self.balance_var.get())
             selected_bank = self.bank_var.get()
+            # Ensure processor matches the selected bank, even if the selection
+            # change event was not triggered prior to clicking Process
+            try:
+                if self.use_multi_bank and MULTI_BANK_AVAILABLE:
+                    self.processor = get_processor(selected_bank)
+            except Exception as e:
+                pass
             
             # Generate output filename
             output_file = self.generate_output_filename(input_file, selected_bank)
