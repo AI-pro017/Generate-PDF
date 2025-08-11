@@ -22,6 +22,31 @@ class RHBProcessor(BaseProcessor):
         self._balance_right_edge = None
         self._summary_open_info = None
 
+    def _row_numeric_font(self, row: List[Dict], balance_blk: Optional[Dict]) -> int:
+        """Return a typical numeric font size for this transaction row.
+
+        Prefers the smallest numeric font size among other amount cells on the
+        same row (e.g., Debit/Credit), so the Balance value matches the body.
+        Falls back to balance cell size minus 1pt, with a floor of 9pt.
+        """
+        try:
+            candidates: List[int] = []
+            for b in row:
+                if b is balance_blk:
+                    continue
+                t = b.get("text", "")
+                if self._is_amount_text(t):
+                    sz = int(b.get("font_size", 12))
+                    candidates.append(sz)
+            if candidates:
+                # Make balance slightly smaller than the smallest numeric on the row
+                return max(7, min(candidates) - 3)
+            fb = int((balance_blk or {}).get("font_size", 12))
+            return max(7, fb - 4)
+        except Exception:
+            fb = int((balance_blk or {}).get("font_size", 12))
+            return max(7, fb - 4)
+
     def _norm(self, s: str) -> str:
         return re.sub(r'[^A-Z]', '', s.upper())
 
@@ -138,13 +163,14 @@ class RHBProcessor(BaseProcessor):
 
                     # Add replacements
                     if balance_blk is not None:
+                        row_font_size = self._row_numeric_font(row, balance_blk)
                         if is_cf:
                             # bottom closing balance in table → replace with GUI input
                             self.balance_replacements.append({
                                 "type": "beginning_balance",
                                 "original_value": Decimal('0.00'),
                                 "bbox": balance_blk["bbox"],
-                                "font_size": balance_blk.get("font_size", 12),
+                                "font_size": row_font_size,
                                 "font": balance_blk.get("font", ""),
                                 "page_num": page_num + 1,
                                 "y_position": balance_blk["bbox"][1]
@@ -155,7 +181,7 @@ class RHBProcessor(BaseProcessor):
                                 "type": "transaction_balance",
                                 "original_value": Decimal('0.00'),
                                 "bbox": balance_blk["bbox"],
-                                "font_size": balance_blk.get("font_size", 12),
+                                "font_size": row_font_size,
                                 "font": balance_blk.get("font", ""),
                                 "page_num": page_num + 1,
                                 "y_position": balance_blk["bbox"][1]
@@ -230,6 +256,21 @@ class RHBProcessor(BaseProcessor):
                 if any(h in n for h in ("OPENINGBALANCE", "BAKIPEMBUKAAN", "ENDINGBALANCE", "BAKIAKHIR", "INTERESTPAIDYTD")):
                     header_xy[n] = (b["x"], b["y"])  # take last; columns increase to right
 
+            # Helper: pick typical numeric font size on the same row as ref block
+            def row_numeric_font_size(ref_blk: Dict) -> int:
+                try:
+                    y_tol = 3.5
+                    same_row_nums = [bb for bb in blocks
+                                     if self._is_amount_text(bb.get("text", ""))
+                                     and abs(bb["y"] - ref_blk["y"]) <= y_tol]
+                    if not same_row_nums:
+                        return max(10, int(ref_blk.get("font_size", 12)) - 1)
+                    # Prefer the rightmost numeric (e.g., Interest Paid YTD column)
+                    rightmost = max(same_row_nums, key=lambda bb: bb["x"]) 
+                    return int(rightmost.get("font_size", ref_blk.get("font_size", 12)))
+                except Exception:
+                    return max(10, int(ref_blk.get("font_size", 12)) - 1)
+
             # helper: value cell under a given header label using neighbor header as right bound
             def value_under(headers_norm_set: set) -> Optional[Dict]:
                 # pick the header with largest x among matches
@@ -253,13 +294,14 @@ class RHBProcessor(BaseProcessor):
                 payload = {
                     "original_value": Decimal('0.00'),
                     "bbox": end_cell["bbox"],
-                    "font_size": end_cell.get("font_size", 12),
+                    # Match typical numeric font size used on this summary row (e.g., Interest Paid YTD)
+                    "font_size": row_numeric_font_size(end_cell),
                     "font": end_cell.get("font", ""),
                     "page_num": page_num,
                     "y_position": end_cell["bbox"][1]
                 }
+                # Only one replacement for the closing balance cell to avoid double drawing (bold look)
                 self.balance_replacements.append({"type": "ending_balance", **payload})
-                self.balance_replacements.append({"type": "beginning_balance", **payload})
 
             # Opening balance value under the header
             open_cell = value_under({"OPENINGBALANCE", "BAKIPEMBUKAAN"})
@@ -268,7 +310,8 @@ class RHBProcessor(BaseProcessor):
                     "type": "transaction_balance",  # map to first-row computed opening balance
                     "original_value": Decimal('0.00'),
                     "bbox": open_cell["bbox"],
-                    "font_size": max(10, open_cell.get("font_size", 12) - 1),
+                    # Use the same row's typical numeric font size so it matches other columns
+                    "font_size": row_numeric_font_size(open_cell),
                     "font": open_cell.get("font", ""),
                     "page_num": page_num,
                     "y_position": open_cell["bbox"][1] - 2.0
@@ -310,13 +353,14 @@ class RHBProcessor(BaseProcessor):
                             payload = {
                                 "original_value": Decimal('0.00'),
                                 "bbox": ec["bbox"],
-                                "font_size": ec.get("font_size", 12),
+                                # Match the summary-row numeric font size here, too
+                                "font_size": row_numeric_font_size(ec),
                                 "font": ec.get("font", ""),
                                 "page_num": page_num,
                                 "y_position": ec["bbox"][1]
                             }
+                            # Single replacement for the closing balance cell
                             self.balance_replacements.append({"type": "ending_balance", **payload})
-                            self.balance_replacements.append({"type": "beginning_balance", **payload})
         except Exception:
             pass
 
@@ -328,12 +372,13 @@ class RHBProcessor(BaseProcessor):
         right_inset = 2.0
         # Expand slightly upward and use no bottom inset for short summary cells to prevent overlap
         cell_h = max(0.1, y1 - y0)
+        # Nudge erase box DOWN a bit to avoid touching the blue rule above
         bottom_inset = 0.0 if cell_h <= 10.0 else 0.8
-        top_inset = -0.6 if cell_h <= 10.0 else 0.0
+        top_inset = 0.8 if cell_h <= 12.0 else 0.0
         rx0 = x0 - left_pad
         rx1 = x1 - right_inset
         ry0 = y0 + top_inset
-        ry1 = max(y0 + 1.0, y1 - bottom_inset)
+        ry1 = max(y0 + 1.2, y1 - bottom_inset)
         r = fitz.Rect(rx0, ry0, rx1, ry1)
         pr = page.rect
         r.x0 = max(pr.x0, r.x0); r.y0 = max(pr.y0, r.y0)
