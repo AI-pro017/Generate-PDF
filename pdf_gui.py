@@ -189,10 +189,10 @@ class PDFProcessorGUI:
         # Bind bank selection change
         self.bank_combo.bind('<<ComboboxSelected>>', self.on_bank_selected)
         
-        # Bank status label
+        # Bank status label (fully supported with reverse calculation)
         self.bank_status_label = tk.Label(
             bank_input_frame,
-            text="✅ MBB (Maybank) - Fully supported",
+            text=f"✅ {self.supported_banks[0]} - Fully supported (reverse calculation)",
             font=('System', 9) if self.is_macos else ('Arial', 9),
             fg='green' if not self.is_macos else 'SystemGreenColor',
             bg=self.get_bg_color()
@@ -205,13 +205,9 @@ class PDFProcessorGUI:
         if not selected_bank:
             return
         
-        # Update status label
-        if selected_bank == 'MBB':
-            status_text = "✅ MBB (Maybank) - Fully supported"
-            status_color = 'green' if not self.is_macos else 'SystemGreenColor'
-        else:
-            status_text = f"⚠️ {selected_bank} - Analysis mode (extracts content for implementation)"
-            status_color = 'orange' if not self.is_macos else 'SystemOrangeColor'
+        # Update status label (all banks supported, reverse calculation)
+        status_text = f"✅ {selected_bank} - Fully supported (reverse calculation)"
+        status_color = 'green' if not self.is_macos else 'SystemGreenColor'
         
         self.bank_status_label.config(text=status_text, fg=status_color)
         
@@ -306,7 +302,7 @@ class PDFProcessorGUI:
         
         balance_frame = tk.LabelFrame(
             parent, 
-            text="💰 Beginning Balance", 
+            text="💰 Closing Balance", 
             font=label_font,
             bg=self.get_bg_color(),
             fg='SystemControlTextColor' if self.is_macos else '#2c3e50'
@@ -318,7 +314,7 @@ class PDFProcessorGUI:
         
         tk.Label(
             balance_input_frame, 
-            text="Enter beginning balance (RM):", 
+            text="Enter closing balance (RM):", 
             font=text_font,
             bg=self.get_bg_color()
         ).pack(side='left')
@@ -467,11 +463,18 @@ class PDFProcessorGUI:
         if filename:
             self.input_file_var.set(filename)
             self.log_message(f"📄 Selected input file: {filename}")
+            # Reflect chosen input folder as the output location in the UI
+            try:
+                in_dir = os.path.dirname(filename)
+                self.output_folder_label.config(text=f"📁 {in_dir}")
+                self._last_output_folder = in_dir
+            except Exception:
+                pass
             
     def generate_output_filename(self, input_file: str, bank_code: str) -> str:
-        """Generate output filename in the output folder"""
-        # Ensure output folder exists
-        output_folder = os.path.join(os.getcwd(), "output")
+        """Generate output filename next to the input PDF"""
+        # Save in the same folder as the source PDF
+        output_folder = os.path.dirname(input_file)
         os.makedirs(output_folder, exist_ok=True)
         
         # Get base filename without extension
@@ -483,6 +486,8 @@ class PDFProcessorGUI:
         # Generate output filename
         output_filename = f"{base_name}_{bank_code}_{timestamp}.pdf"
         output_path = os.path.join(output_folder, output_filename)
+        # remember for Open Output Folder button
+        self._last_output_folder = output_folder
         
         return output_path
         
@@ -621,7 +626,11 @@ class PDFProcessorGUI:
     def open_output_folder(self):
         """Open the output folder in file explorer"""
         
-        output_folder = os.path.join(os.getcwd(), "output")
+        output_folder = getattr(self, '_last_output_folder', None)
+        if not output_folder and self.input_file_var.get():
+            output_folder = os.path.dirname(self.input_file_var.get())
+        if not output_folder:
+            output_folder = os.getcwd()
         if os.path.exists(output_folder):
             try:
                 if platform.system() == "Windows":
