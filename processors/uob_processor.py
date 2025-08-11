@@ -34,6 +34,8 @@ class UOBProcessor(BaseProcessor):
         self.bank_name = "UOB Bank"
         self._uob_balance_right_edge = None
         self._carry = Decimal('0.00')
+        # Computed opening balance after reverse recomputation
+        self._computed_opening_balance: Optional[Decimal] = None
 
     # UOB formats: "01 Apr", "01 Apr 2025"
     def _is_date(self, text: str) -> bool:
@@ -609,3 +611,54 @@ class UOBProcessor(BaseProcessor):
 
         # snap to canonical white or UOB blue
         return UOB_BLUE if math.dist(best_fill, UOB_BLUE) < math.dist(best_fill, UOB_WHITE) else UOB_WHITE
+
+    # Reverse recomputation: treat user input as closing balance and compute upwards
+    def recalculate_balances(self, transactions: List[Dict], beginning_balance: Decimal, log_func: Callable = print) -> List[Dict]:
+        try:
+            closing_balance = beginning_balance
+            log_func(f"💰 Closing balance (input): RM {closing_balance:,.2f}")
+            log_func("=" * 90)
+            log_func(f"{'#':<3} {'Date':<10} {'Description':<40} {'Amount':>12} {'New Balance':>15}")
+            log_func("=" * 90)
+
+            running = closing_balance
+            for t in reversed(transactions):
+                amt = t.get('amount', Decimal('0.00')) or Decimal('0.00')
+                # The displayed balance for this row is after applying this row's change
+                t['new_balance'] = running
+                running = (running - amt).quantize(Decimal('0.01'))
+
+            self._computed_opening_balance = running
+
+            for i, t in enumerate(transactions, 1):
+                desc = (t.get('description') or '')
+                if len(desc) > 37:
+                    desc = desc[:37] + '...'
+                amt = t.get('amount', Decimal('0.00')) or Decimal('0.00')
+                log_func(f"{i:<3} {t.get('date',''):<10} {desc:<40} {amt:>12,.2f} {t['new_balance']:>15,.2f}")
+
+            log_func("=" * 90)
+            log_func(f"🟡 Computed opening balance: RM {self._computed_opening_balance:,.2f}")
+            return transactions
+        except Exception as e:
+            log_func(f"⚠️ Error recalculating UOB balances: {e}")
+            return transactions
+
+    # Override to place values in summary according to reverse logic
+    def _populate_new_values(self, transactions: List[Dict], log_func: Callable = print):
+        # Use base logic to map per-row balances and totals first
+        super()._populate_new_values(transactions, log_func)
+        try:
+            for rep in self.balance_replacements:
+                typ = rep.get('type')
+                if typ == 'ending_balance':
+                    # Closing balance should be the user-provided input
+                    rep['new_value'] = self._format_amount(self.beginning_balance)
+                elif typ == 'beginning_balance':
+                    # If present, set opening balance to computed value
+                    opening = (self._computed_opening_balance
+                               if self._computed_opening_balance is not None
+                               else (transactions[0]['new_balance'] if transactions else self.beginning_balance))
+                    rep['new_value'] = self._format_amount(opening)
+        except Exception as e:
+            log_func(f"⚠️ Error overriding UOB summary values: {e}")

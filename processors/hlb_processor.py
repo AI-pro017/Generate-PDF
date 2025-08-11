@@ -22,6 +22,8 @@ class HLBProcessor(BaseProcessor):
         # carry pending amount across pages (rows without visible balance)
         self._carry = Decimal('0.00')
         self._hlb_balance_right_edge = None
+        # computed opening balance after reverse calculation
+        self._computed_opening_balance: Optional[Decimal] = None
     def _is_amount_text(self, text: str) -> bool:
         t = text.strip()
         # must contain decimals; reject integers and long IDs
@@ -365,3 +367,56 @@ class HLBProcessor(BaseProcessor):
 
     def _parse_transaction_row(self, row_blocks: List[Dict], page_num: int, balance_column_x: float, log_func: Callable) -> Optional[Dict]:
         return None
+
+    # Reverse recomputation: treat user input as closing balance and compute upwards
+    def recalculate_balances(self, transactions: List[Dict], beginning_balance: Decimal, log_func: Callable = print) -> List[Dict]:
+        try:
+            closing_balance = beginning_balance
+            log_func(f"💰 Closing balance (input): RM {closing_balance:,.2f}")
+            log_func("=" * 90)
+            log_func(f"{'#':<3} {'Date':<10} {'Description':<40} {'Amount':>12} {'New Balance':>15}")
+            log_func("=" * 90)
+
+            running = closing_balance
+            for t in reversed(transactions):
+                amt = t.get('amount', Decimal('0.00')) or Decimal('0.00')
+                # The balance printed on this row is AFTER applying its net change
+                t['new_balance'] = running
+                # Move upward: undo this row's change
+                running = (running - amt).quantize(Decimal('0.01'))
+
+            self._computed_opening_balance = running
+
+            for i, t in enumerate(transactions, 1):
+                desc = (t.get('description') or '')
+                if len(desc) > 37:
+                    desc = desc[:37] + '...'
+                amt = t.get('amount', Decimal('0.00')) or Decimal('0.00')
+                log_func(f"{i:<3} {t.get('date',''):<10} {desc:<40} {amt:>12,.2f} {t['new_balance']:>15,.2f}")
+
+            log_func("=" * 90)
+            log_func(f"🟡 Computed opening balance: RM {self._computed_opening_balance:,.2f}")
+            return transactions
+        except Exception as e:
+            log_func(f"⚠️ Error recalculating HLB balances: {e}")
+            return transactions
+
+    # Override to place values in summary according to reverse logic
+    def _populate_new_values(self, transactions: List[Dict], log_func: Callable = print):
+        # Use base logic for mapping per-row balances and totals first
+        super()._populate_new_values(transactions, log_func)
+        try:
+            # Then override summary placements
+            for rep in self.balance_replacements:
+                t = rep.get('type')
+                if t == 'ending_balance':
+                    # Set closing balance to the user input
+                    rep['new_value'] = self._format_amount(self.beginning_balance)
+                elif t == 'beginning_balance':
+                    # If any beginning balance label exists, use computed opening
+                    opening = (self._computed_opening_balance
+                               if self._computed_opening_balance is not None
+                               else (transactions[0]['new_balance'] if transactions else self.beginning_balance))
+                    rep['new_value'] = self._format_amount(opening)
+        except Exception as e:
+            log_func(f"⚠️ Error overriding HLB summary values: {e}")
