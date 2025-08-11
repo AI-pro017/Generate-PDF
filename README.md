@@ -1,19 +1,20 @@
-# PDF Statement Balance Updater - Maybank Edition
+# Multi‑Bank PDF Statement Balance Updater
 
-A professional desktop application for automatically updating balance values in Maybank PDF bank statements. This tool recalculates running balances, maintains perfect column alignment, and preserves original PDF formatting and metadata.
+A desktop app that recalculates and rewrites statement balances in bank PDFs while preserving layout and metadata. The app now supports six banks and implements the new reverse calculation logic.
 
 ## ✨ Features
 
-- 🏦 **Maybank Statement Support**: Specifically designed for Maybank PDF statements
-- 🎯 **Perfect Alignment**: Maintains exact column alignment matching the original PDF
-- 📊 **Automatic Calculations**: Recalculates running balances based on beginning balance
-- 🔒 **Preserves Formatting**: Keeps original PDF layout, fonts, and styling
-- 📋 **Metadata Preservation**: Maintains all original PDF metadata (title, author, etc.)
-- 💻 **User-Friendly GUI**: Simple, intuitive graphical interface
-- 🚀 **No Technical Skills Required**: Just point, click, and process
-- 📱 **Cross-Platform**: Works on Windows, Mac, and Linux
+- 🏦 **Multi‑Bank Support**: MBB, PBB, RHB, HLB, OCBC, UOB
+- 🔁 **Reverse Calculation**: You enter the closing balance, the app computes all prior running balances bottom‑to‑top
+  - Deposits decrease the balance
+  - Withdrawals increase the balance
+- 🎯 **Perfect Alignment**: Rewrites numbers right‑aligned in the original columns
+- 🔒 **Layout Preservation**: Fonts, colors, table rules, and metadata are retained
+- 💻 **User‑friendly GUI**
+- 📦 **Single Executable** for easy distribution (no Python required)
+- 📂 **Output Location**: Updated PDF is saved next to the source PDF
 
-## 🚀 Quick Start (Executable Version)
+## 🚀 Quick Start (Executable)
 
 ### For End Users (Recommended)
 
@@ -21,54 +22,59 @@ A professional desktop application for automatically updating balance values in 
 
 1. **Download** the executable for your system:
    - Windows: `PDF_Statement_Processor.exe`
-   - Mac: `PDF_Statement_Processor`
-   - Linux: `PDF_Statement_Processor`
+   - macOS: `PDF_Statement_Processor`
 
 2. **Double-click** the executable to launch
 
 3. **Select your PDF** statement file
 
-4. **Enter the beginning balance** amount
+4. **Enter the closing balance** amount
 
 5. **Click "Process PDF Statement"**
 
-6. **Done!** Your updated PDF will be saved automatically
+6. **Done!** Your updated PDF will be saved in the same folder as the source PDF
 
 ### System Requirements
+
 - **Windows**: Windows 10/11 (64-bit)
 - **Mac**: macOS 10.14 or later
 - **Linux**: Most modern distributions
 - **Disk Space**: At least 100MB free space
 
-## 🛠️ Developer Setup (Python Version)
+## 🛠️ Developer Setup (Python)
 
 ### Prerequisites
+
 - Python 3.8 or higher
 - pip (Python package installer)
 
 ### Installation
 
 1. **Install dependencies**:
+
    ```bash
    pip install -r requirements.txt
    ```
 
 2. **Run the application**:
+
    ```bash
    python run_gui.py
    ```
 
 ### Dependencies
-- `PyPDF2>=3.0.0` - PDF manipulation
-- `reportlab>=4.0.0` - PDF generation
-- `PyMuPDF>=1.23.0` - Advanced PDF processing
-- `pandas>=2.0.0` - Data handling
 
-## 🔧 Building Executables
+- `PyPDF2>=3.0.0` – PDF manipulation
+- `reportlab>=4.0.0` – PDF generation
+- `PyMuPDF>=1.23.0` – Advanced PDF parsing/rendering
+- `pandas>=2.0.0` – Data handling
+
+## 🔧 Build Executables
 
 Create standalone executables for distribution to clients who don't have Python installed.
 
 ### Windows
+
 ```cmd
 # Install build dependencies
 pip install -r requirements.txt
@@ -78,7 +84,8 @@ pip install pyinstaller
 build.bat
 ```
 
-### Mac/Linux
+### macOS / Linux
+
 ```bash
 # Install build dependencies
 pip3 install -r requirements.txt
@@ -90,16 +97,17 @@ chmod +x build.sh
 ```
 
 ### Build Output
-- Executable will be created in the `dist/` folder
-- Size: ~50-100MB (includes all dependencies)
-- Single file distribution - no additional files needed
+
+- Executable is created in `dist/`
+- Size: ~100–200 MB (includes all dependencies)
+- Single file distribution – no Python required
 
 ## 📖 How to Use
 
 ### Step-by-Step Guide
 
 1. **Launch the Application**
-   - Double-click the executable OR run `python run_gui.py`
+   - Double‑click the executable OR run `python run_gui.py`
 
 2. **Select Input PDF**
    - Click "Browse" next to "Input PDF"
@@ -109,9 +117,9 @@ chmod +x build.sh
    - Click "Browse" next to "Output PDF" (auto-generated if not set)
    - Choose where to save the updated PDF
 
-4. **Enter Beginning Balance**
-   - Input the starting balance amount (e.g., 4000.00)
-   - Use numbers only, no currency symbols
+4. **Enter Closing Balance**
+   - Input the statement closing balance (e.g., 4000.00)
+   - Numbers only, no currency symbols
 
 5. **Process the Statement**
    - Click "🚀 Process PDF Statement"
@@ -122,8 +130,20 @@ chmod +x build.sh
    - Open the output folder to view your updated PDF
 
 ### Example
-```
+
+```text
 Input: bank_statement.pdf
-Beginning Balance: 2513.01
-Output: bank_statement_updated.pdf
-``` 
+Closing Balance: 2513.01
+Output: bank_statement_MBB_20250101_120000.pdf
+```
+
+## ❓ FAQ
+
+- Why do deposits reduce the balance and withdrawals increase it?
+  - This project follows a reverse computation flow requested by the client: starting from the final closing balance and walking back through the statement bottom‑to‑top.
+
+- Where is the output saved?
+  - Beside the original source PDF (same folder). The GUI shows the path under “Output will be saved to:”.
+
+- Can I still enter an opening/beginning balance?
+  - No. The UI was updated to “Closing Balance” to match the reverse calculation logic across all supported banks.
