@@ -399,8 +399,8 @@ class PDFProcessorGUI:
             results_frame,
             height=15,
             font=('System', 9) if self.is_macos else ('Courier', 9),
-            bg='white' if not self.is_macos else 'SystemWindowBackgroundColor',
-            fg='black' if not self.is_macos else 'SystemWindowTextColor'
+            bg='white',  # Use standard white for all platforms
+            fg='black'   # Use standard black for all platforms
         )
         self.results_text.pack(fill='both', expand=True, padx=10, pady=10)
         
