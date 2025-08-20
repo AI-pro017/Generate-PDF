@@ -112,6 +112,25 @@ class HLBProcessor(BaseProcessor):
             return header_x
         return None
 
+    def _preferred_row_font_size(self, row, col_of) -> float:
+        """Return a font size matching other amount columns in this row."""
+        sizes = []
+        for b in row:
+            tx = b.get("text", "")
+            if self._clean_num_text(tx) is None:
+                continue
+            # Prefer Deposit/Withdrawal columns
+            if col_of(b["x"]) != "BALANCE":
+                sizes.append(b.get("font_size", 12))
+        if sizes:
+            return min(sizes)  # keep it slightly smaller if there’s any mismatch
+
+        # Fallback: any numeric in the row
+        for b in row:
+            if self._clean_num_text(b.get("text", "")) is not None:
+                sizes.append(b.get("font_size", 12))
+        return min(sizes) if sizes else 12
+
     def _extract_transactions_and_balances(self, text_dict: dict, page_num: int, log_func: Callable) -> List[Dict]:
         transactions: List[Dict] = []
         try:
@@ -188,6 +207,8 @@ class HLBProcessor(BaseProcessor):
                     else:  # BALANCE
                         balance_blk = b
 
+                row_fs = self._preferred_row_font_size(row, col_of)
+
                 if is_opening and balance_blk is not None:
                     transactions.append({
                         "date": date_blk["text"] if date_blk else "",
@@ -199,7 +220,7 @@ class HLBProcessor(BaseProcessor):
                     })
                     self.balance_replacements.append({
                         "type":"transaction_balance","original_value":Decimal('0.00'),
-                        "bbox": balance_blk["bbox"], "font_size": balance_blk.get("font_size",12),
+                        "bbox": balance_blk["bbox"], "font_size": row_fs,
                         "font": balance_blk.get("font",""), "page_num": page_num, "y_position": balance_blk["bbox"][1]
                     })
                     continue
@@ -223,7 +244,7 @@ class HLBProcessor(BaseProcessor):
                     })
                     self.balance_replacements.append({
                         "type":"transaction_balance","original_value":Decimal('0.00'),
-                        "bbox": balance_blk["bbox"], "font_size": balance_blk.get("font_size",12),
+                        "bbox": balance_blk["bbox"], "font_size": row_fs,
                         "font": balance_blk.get("font",""), "page_num": page_num, "y_position": balance_blk["bbox"][1]
                     })
                     pending = Decimal('0.00')
@@ -420,3 +441,47 @@ class HLBProcessor(BaseProcessor):
                     rep['new_value'] = self._format_amount(opening)
         except Exception as e:
             log_func(f"⚠️ Error overriding HLB summary values: {e}")
+
+    def generate_updated_pdf(self, transactions: List[Dict], output_path: str, log_func: Callable = print):
+        log_func("📄 Generating updated PDF (HLB style)...")
+        # Fill new values first
+        self._populate_new_values(transactions, log_func)
+
+        import fitz, os
+        orig = fitz.open(self.original_pdf_path)
+        out  = fitz.open()
+
+        # copy metadata
+        self._copy_metadata(orig, out, log_func)
+
+        # slightly grey text color to match original HLB numbers
+        hlb_text_color = (0.20, 0.20, 0.20)
+
+        for page_idx in range(len(orig)):
+            src = orig.load_page(page_idx)
+            dst = out.new_page(width=src.rect.width, height=src.rect.height)
+            dst.show_pdf_page(dst.rect, orig, page_idx)
+
+            reps = [r for r in self.balance_replacements if r['page_num'] == page_idx + 1]
+            log_func(f"📄 Page {page_idx+1}: {len(reps)} balance positions")
+
+            # erase
+            for rep in reps:
+                erase_r = self._erase_rect(dst, rep['bbox'])
+                bg = self._bg_for(dst, rep['bbox'], rep.get('bg_color'))
+                dst.add_redact_annot(erase_r, fill=bg)
+            dst.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+
+            # draw (right-aligned)
+            for rep in reps:
+                fs   = rep.get('font_size', 12)
+                text = str(rep['new_value'])
+                char_w = fs * 0.5
+                x = rep['bbox'][2] - len(text) * char_w
+                y = rep['bbox'][1] + fs * 0.8
+                dst.insert_text(fitz.Point(x, y), text, fontsize=fs, color=hlb_text_color, fontname="helv")
+
+        out.save(output_path)
+        out.close()
+        orig.close()
+        log_func(f"✅ Updated PDF saved to: {output_path}")

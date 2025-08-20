@@ -190,10 +190,30 @@ class ALBProcessor(BaseProcessor):
                         # inset right edge to avoid painting over the vertical rule
                         bb = list(balance_blk["bbox"])
                         bb[2] = max(bb[0] + 1.0, bb[2] - self._right_inset)
-                        rep_type = "ending_balance" if is_ending else "transaction_balance"
+                        
+                        if is_beginning:
+                            rep_type = "beginning_balance"
+                        elif is_ending:
+                            rep_type = "ending_balance"
+                        else:
+                            rep_type = "transaction_balance"
+                        
                         # Use date column style for BEGINNING/ENDING rows; otherwise use numeric style
                         style = self._row_date_style(row) if (is_beginning or is_ending) else self._row_numeric_style(row, balance_blk)
                         final_font_size = style["font_size"]
+                        
+                        # For BEGINNING BALANCE rows, always preserve CR suffix if the original had it
+                        # For other rows, use the detected CR suffix
+                        suffix = ""
+                        if is_beginning:
+                            # For BEGINNING BALANCE rows, we need to check if ANY balance in the PDF has CR suffix
+                            # This indicates the account type uses CR suffix
+                            # We'll set this to always include CR for BEGINNING BALANCE rows if we detect CR anywhere
+                            suffix = " CR"  # Always add CR for BEGINNING BALANCE rows in ALB
+                        else:
+                            suffix = " CR" if balance_has_cr else ""
+                        
+                        log_func(f"🔍 ALB creating replacement: type={rep_type}, suffix='{suffix}', is_beginning={is_beginning}, balance_has_cr={balance_has_cr}")
                         self.balance_replacements.append({
                             "type": rep_type,
                             "original_value": Decimal('0.00'),
@@ -202,18 +222,33 @@ class ALBProcessor(BaseProcessor):
                             "font": style["font"],
                             "page_num": page_num + 1,
                             "y_position": bb[1],
-                            "suffix": " CR" if balance_has_cr else ""
+                            "suffix": suffix
                         })
 
-                    # Logical transaction for recomputation (bottom-up): amount = debit - credit
+                    # Logical transaction for recomputation (bottom-up)
+                    # For reverse calculation: we need the signed transaction amount
+                    # Credit (+10.00) means money in, so previous balance = current - 10.00
+                    # Debit (-20.00) means money out, so previous balance = current + 20.00
                     if debit_val is None and credit_val is None:
                         continue
+                    
+                    # Skip BEGINNING BALANCE rows - they don't create transactions
+                    if is_beginning:
+                        continue
+                    
+                    # The transaction amount is the net effect on the balance
+                    # For credit (money in): subtract from balance
+                    # For debit (money out): add to balance
+                    transaction_amount = (credit_val or Decimal('0.00')) - (debit_val or Decimal('0.00'))
+                    
+                    log_func(f"🔍 ALB creating transaction: debit={debit_val}, credit={credit_val}, amount={transaction_amount}")
+                    
                     transactions.append({
                         "date": "",
                         "description": "",
                         "debit": debit_val or Decimal('0.00'),
                         "credit": credit_val or Decimal('0.00'),
-                        "amount": (debit_val or Decimal('0.00')) - (credit_val or Decimal('0.00')),
+                        "amount": transaction_amount,  # This is the signed transaction amount
                         "new_balance": Decimal('0.00'),
                         "page_num": page_num + 1,
                         "y_position": balance_blk["bbox"][1] if balance_blk else row_y
@@ -303,19 +338,31 @@ class ALBProcessor(BaseProcessor):
         try:
             closing = beginning_balance
             ordered = sorted(transactions, key=lambda t: (t['page_num'], t.get('y_position', 0)))
-            rev = list(reversed(ordered))
-            running = closing
+            
+            # Start with the closing balance and work backwards through transactions
+            running_balance = closing
             computed: List[Dict] = []
-            total_debit = Decimal('0.00'); total_credit = Decimal('0.00')
-            for t in rev:
+            
+            # Process from last transaction to first (reverse order)
+            for t in reversed(ordered):
+                # Set this transaction's balance
+                t['new_balance'] = running_balance
+                
+                # Calculate the previous balance
                 debit = t.get('debit', Decimal('0.00')) or Decimal('0.00')
                 credit = t.get('credit', Decimal('0.00')) or Decimal('0.00')
-                running = (running + debit - credit).quantize(Decimal('0.01'))
-                nt = dict(t); nt['new_balance'] = running
-                computed.append(nt)
-                total_debit += debit; total_credit += credit
-            computed = list(reversed(computed))
-
+                
+                # For reverse calculation:
+                # Credit (+10.00): money came in, so previous balance = current - 10.00
+                # Debit (20.00): money went out, so previous balance = current + 20.00
+                # So: previous = current - transaction_amount
+                transaction_amount = t.get('amount', Decimal('0.00'))
+                running_balance = (running_balance - transaction_amount).quantize(Decimal('0.01'))
+                
+                computed.append(t)
+            
+            # Reverse back to original order
+            computed.reverse()
             log_func(f"💰 Closing balance (input): RM {closing:,.2f}")
             return computed
         except Exception as e:
@@ -326,11 +373,39 @@ class ALBProcessor(BaseProcessor):
     def _populate_new_values(self, transactions: List[Dict], log_func: Callable = print):
         try:
             # Ending balance use user input and preserve CR suffix if seen on summary row
+            log_func(f"🔍 ALB _populate_new_values: processing {len(self.balance_replacements)} replacements")
             for rep in self.balance_replacements:
+                log_func(f"🔍 ALB replacement type: {rep.get('type')}, suffix: '{rep.get('suffix', '')}'")
                 if rep.get('type') == 'ending_balance':
                     # if original had CR, keep it
                     suffix = rep.get('suffix', '')
                     rep['new_value'] = self._format_amount(self.beginning_balance) + suffix
+                    log_func(f"🔍 ALB ENDING BALANCE: {rep['new_value']}")
+                elif rep.get('type') == 'beginning_balance':
+                    # BEGINNING BALANCE gets the calculated opening balance
+                    suffix = rep.get('suffix', '')
+                    log_func(f"🔍 ALB BEGINNING BALANCE: calculating with suffix '{suffix}'")
+                    # The opening balance is the final running_balance after reverse calculation
+                    # We need to calculate it here since it's not stored in transactions
+                    if transactions:
+                        # Calculate the opening balance by working backwards from the last transaction
+                        closing_balance = self.beginning_balance  # This is the user input (closing balance)
+                        opening_balance = closing_balance
+                        
+                        log_func(f"🔍 ALB transactions: {len(transactions)}")
+                        for i, t in enumerate(reversed(transactions)):
+                            # For each transaction, calculate the previous balance
+                            transaction_amount = t.get('amount', Decimal('0.00'))
+                            old_balance = opening_balance
+                            opening_balance = (opening_balance - transaction_amount).quantize(Decimal('0.01'))
+                            log_func(f"🔍 ALB transaction {i}: amount={transaction_amount}, {old_balance} -> {opening_balance}")
+                        
+                        log_func(f"🔍 ALB BEGINNING BALANCE calculation: closing={closing_balance}, opening={opening_balance}")
+                        rep['new_value'] = self._format_amount(opening_balance) + suffix
+                        log_func(f"🔍 ALB BEGINNING BALANCE final value: {rep['new_value']}")
+                    else:
+                        rep['new_value'] = self._format_amount(self.beginning_balance) + suffix
+                        log_func(f"🔍 ALB BEGINNING BALANCE no transactions: {rep['new_value']}")
 
             # Assign transaction balances per page, preserving CR suffix
             from collections import defaultdict
@@ -343,12 +418,28 @@ class ALBProcessor(BaseProcessor):
                 if rep.get('type') == 'transaction_balance':
                     reps_by_page[rep['page_num']].append(rep)
 
+            # Find the very last transaction across all pages
+            all_transactions = sorted(transactions, key=lambda t: (t['page_num'], t.get('y_position', 0)))
+            last_transaction = all_transactions[-1] if all_transactions else None
+
             for page_num, txs in tx_by_page.items():
                 reps = sorted(reps_by_page.get(page_num, []), key=lambda r: r.get('y_position', 0))
                 n = min(len(txs), len(reps))
+                log_func(f"🔍 ALB page {page_num}: {len(txs)} transactions, {len(reps)} replacements")
                 for i in range(n):
-                    val = self._format_amount(txs[i]['new_balance']) + reps[i].get('suffix', '')
-                    reps[i]['new_value'] = val
+                    # Check if this is the very last transaction across ALL pages
+                    is_last_across_all_pages = (txs[i] == last_transaction)
+                    
+                    if is_last_across_all_pages:
+                        # Only the very last transaction row across all pages gets the card value
+                        val = self._format_amount(self.beginning_balance) + reps[i].get('suffix', '')
+                        reps[i]['new_value'] = val
+                        log_func(f"🔍 ALB last transaction across all pages: {val}")
+                    else:
+                        # All other rows use calculated values
+                        val = self._format_amount(txs[i]['new_balance']) + reps[i].get('suffix', '')
+                        reps[i]['new_value'] = val
+                        log_func(f"🔍 ALB transaction {i}: {val}")
 
             # Totals unchanged (if present)
             ending_balance = transactions[-1]['new_balance'] if transactions else self.beginning_balance
@@ -361,14 +452,19 @@ class ALBProcessor(BaseProcessor):
                 elif t == 'total_debit':
                     rep['new_value'] = self._format_amount(total_debit)
                 elif t == 'beginning_balance':
-                    # If there is a summary "BEGINNING BALANCE" cell captured as transaction_balance, it will be filled via mapping above
-                    # This branch is only for explicit beginning_balance type, rarely used here
-                    rep['new_value'] = self._format_amount(ending_balance)
+                    # BEGINNING BALANCE is already handled above in the main loop
+                    # Don't overwrite it here
+                    pass
 
             # Fallback: ensure all replacements have a value to avoid runtime errors
             for rep in self.balance_replacements:
                 if 'new_value' not in rep or rep['new_value'] is None:
                     rep['new_value'] = self._format_amount(ending_balance) + rep.get('suffix', '')
+            
+            # Debug: show final values for all replacements
+            log_func(f"🔍 ALB Final replacement values:")
+            for i, rep in enumerate(self.balance_replacements):
+                log_func(f"🔍 ALB {i}: type={rep.get('type')}, value={rep.get('new_value')}, suffix='{rep.get('suffix', '')}'")
         except Exception as e:
             log_func(f"⚠️ Error populating ALB values: {e}")
 

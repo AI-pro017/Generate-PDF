@@ -215,15 +215,17 @@ class GXBProcessor(BaseProcessor):
                     # so that the balance cell still receives a computed value.
                     if in_val is None and out_val is None and bal_blk is None:
                         continue
-                    # Reverse mapping: debit = money out, credit = money in
-                    debit = (out_val or Decimal('0.00')).copy_abs()
-                    credit = (in_val or Decimal('0.00')).copy_abs()
+                    
+                    # The transaction amount is already correctly signed from the PDF
+                    # in_val and out_val already have the correct signs (+ or -)
+                    transaction_amount = (in_val or Decimal('0.00')) + (out_val or Decimal('0.00'))
+                    
                     transactions.append({
                         "date": "",
                         "description": "",
-                        "debit": debit,
-                        "credit": credit,
-                        "amount": debit - credit,
+                        "debit": Decimal('0.00'),  # Not used in calculation
+                        "credit": Decimal('0.00'),  # Not used in calculation
+                        "amount": transaction_amount,  # This is the signed transaction amount
                         "new_balance": Decimal('0.00'),
                         "page_num": page_num + 1,
                         "y_position": bal_blk["bbox"][1] if bal_blk else row_y,
@@ -395,16 +397,31 @@ class GXBProcessor(BaseProcessor):
         try:
             closing = beginning_balance
             ordered = sorted(transactions, key=lambda t: (t['page_num'], t.get('y_position', 0)))
-            rev = list(reversed(ordered))
-            running = closing
+            
+            # Start with the closing balance and work backwards through transactions
+            # For each transaction: previous_balance = current_balance - transaction_effect
+            # Money out (debit) increases balance, Money in (credit) decreases balance
+            running_balance = closing
             computed: List[Dict] = []
-            for t in rev:
-                debit = t.get('debit', Decimal('0.00')) or Decimal('0.00')
-                credit = t.get('credit', Decimal('0.00')) or Decimal('0.00')
-                running = (running + debit - credit).quantize(Decimal('0.01'))
-                nt = dict(t); nt['new_balance'] = running
-                computed.append(nt)
-            computed = list(reversed(computed))
+            
+            # Process from last transaction to first (reverse order)
+            for t in reversed(ordered):
+                # Set this transaction's balance
+                t['new_balance'] = running_balance
+                
+                # Calculate the previous balance
+                # The amount field already contains the signed transaction amount
+                # For reverse calculation:
+                # If this transaction was -14.30 (negative), previous balance = current + 14.30
+                # If this transaction was +15.00 (positive), previous balance = current - 15.00
+                # So: previous = current - transaction_amount
+                transaction_amount = t.get('amount', Decimal('0.00'))
+                running_balance = (running_balance - transaction_amount).quantize(Decimal('0.01'))
+                
+                computed.append(t)
+            
+            # Reverse back to original order
+            computed.reverse()
             log_func(f"💰 Closing balance (input): RM {closing:,.2f}")
             return computed
         except Exception as e:
@@ -420,7 +437,7 @@ class GXBProcessor(BaseProcessor):
                 if rep.get('type') == 'ending_balance':
                     rep['new_value'] = self._format_amount(card_value)
 
-            # per-row balances
+            # per-row balances - need to find the very last transaction across all pages
             from collections import defaultdict
             by_page = defaultdict(list)
             for t in transactions:
@@ -429,16 +446,34 @@ class GXBProcessor(BaseProcessor):
             for rep in self.balance_replacements:
                 if rep.get('type') == 'transaction_balance':
                     reps_by_page[rep['page_num']].append(rep)
+            
+            # Find the very last transaction across all pages
+            all_transactions = sorted(transactions, key=lambda t: (t['page_num'], t.get('y_position', 0)))
+            last_transaction = all_transactions[-1] if all_transactions else None
+            
             for p, txs in by_page.items():
                 reps = sorted(reps_by_page.get(p, []), key=lambda r: r.get('y_position', 0))
                 n = min(len(txs), len(reps))
-                for i in range(n):
-                    reps[i]['new_value'] = self._format_amount(txs[i]['new_balance'])
+                
+                if n > 0 and reps:
+                    for i in range(n):
+                        if i == n - 1 and txs[i] == last_transaction:
+                            # Only the very last transaction row across all pages gets the card value
+                            reps[i]['new_value'] = self._format_amount(card_value)
+                            reps[i]['color'] = self._brand_color or reps[i].get('color')
+                        else:
+                            # All other rows use calculated values
+                            reps[i]['new_value'] = self._format_amount(txs[i]['new_balance'])
+                else:
+                    # Fallback: use calculated values
+                    for i in range(n):
+                        reps[i]['new_value'] = self._format_amount(txs[i]['new_balance'])
+                
                 # Ensure summary band (if present) shows card value and shares card styling
                 for rep in reps:
                     if rep.get('is_summary'):
                         rep['new_value'] = self._format_amount(card_value)
-                        rep['color'] = self._brand_color or rep.get('color')
+                        rep['color'] = rep.get('color')  # Keep original color for summary
             # Fallback: ensure all have values
             last_val = self._format_amount(transactions[-1]['new_balance']) if transactions else self._format_amount(self.beginning_balance)
             for rep in self.balance_replacements:

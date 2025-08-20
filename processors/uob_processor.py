@@ -334,6 +334,8 @@ class UOBProcessor(BaseProcessor):
                     continue
 
                 row_text = " ".join(b["text"] for b in row).upper()
+                log_func(f"🔍 DEBUG: Processing row: {row_text}")
+                
                 # skip header/summary lines
                 if any(k in row_text for k in ["TOTAL", "JUMLAH", "DATE", "TARIKH", "ACCOUNT", "DETAILS"]):
                     # If this summary row has a balance value, tag it to final ending balance
@@ -365,21 +367,30 @@ class UOBProcessor(BaseProcessor):
                         continue
                     if c == "DEPOSIT":
                         deposit_val = num
+                        log_func(f"🔍 DEBUG:   Found deposit: {num:,.2f}")
                     elif c == "WITHDRAWAL":
                         withdraw_val = num
+                        log_func(f"🔍 DEBUG:   Found withdrawal: {num:,.2f}")
                     else:
                         balance_blk = b
+                        log_func(f"🔍 DEBUG:   Found balance: {num:,.2f}")
 
                 if is_opening and balance_blk is not None:
                     # opening balance → amount 0, we replace the visible balance with beginning_balance
+                    opening_balance = self._clean_num_text(balance_blk["text"]) or Decimal('0.00')
+                    log_func(f"🔍 DEBUG: Found opening balance: RM {opening_balance:,.2f}")
                     transactions.append({
                         "date": date_blk["text"] if date_blk else "",
                         "description": "BALANCE B/F",
-                        "amount": Decimal('0.00'),
-                        "original_balance": Decimal('0.00'),
+                        "amount": Decimal('0.00'),  # No change for opening balance
+                        "deposit_val": None,
+                        "withdraw_val": None,
+                        "original_balance": opening_balance,
                         "new_balance": Decimal('0.00'),
                         "page_num": page_num
                     })
+                    # Set the pending to the opening balance for next calculations
+                    pending = opening_balance
                     self._append_uob(
                         label="Txn balance",
                         typ="transaction_balance",
@@ -395,18 +406,45 @@ class UOBProcessor(BaseProcessor):
                     continue
 
                 if deposit_val is None and withdraw_val is None and balance_blk is None:
+                    log_func(f"🔍 DEBUG:   Skipping row - no deposit, withdrawal, or balance found")
                     continue
 
-                delta = Decimal('0.00')
-                if withdraw_val not in (None, Decimal('0.00')): delta -= withdraw_val
-                if deposit_val not in (None, Decimal('0.00')): delta += deposit_val
-                pending += delta
+                # For UOB, we need to calculate the ACTUAL balance change, not just add/subtract values
+                # The "amount" field should represent the actual change in balance from the previous row
+                actual_balance_change = Decimal('0.00')
+                
+                if balance_blk is not None:
+                    # Get the current balance from this row
+                    current_balance = self._clean_num_text(balance_blk["text"])
+                    if current_balance is not None:
+                        # Calculate the actual change from previous balance
+                        if pending != Decimal('0.00'):  # Not the first row
+                            actual_balance_change = current_balance - pending
+                        else:
+                            # First row - use the balance as is
+                            actual_balance_change = current_balance
+                        
+                        log_func(f"🔍 DEBUG: Row {date_blk['text'] if date_blk else 'Unknown'}: Current Balance={current_balance:,.2f}, Previous Pending={pending:,.2f}, Actual Change={actual_balance_change:,.2f}")
+                        
+                        # Store the actual balance change
+                        pending = current_balance
+                    else:
+                        log_func(f"🔍 DEBUG: Could not parse balance value: {balance_blk['text']}")
+                        pending = Decimal('0.00')
+                else:
+                    log_func(f"🔍 DEBUG: No balance found for row {date_blk['text'] if date_blk else 'Unknown'}")
+                    pending = Decimal('0.00')
 
                 if balance_blk is not None:
+                    deposit_str = f"{deposit_val:,.2f}" if deposit_val else "None"
+                    withdrawal_str = f"{withdraw_val:,.2f}" if withdraw_val else "None"
+                    log_func(f"🔍 DEBUG: Adding transaction: Date={date_blk['text'] if date_blk else ''}, Amount={actual_balance_change:,.2f}, Deposit={deposit_str}, Withdrawal={withdrawal_str}")
                     transactions.append({
                         "date": date_blk["text"] if date_blk else "",
                         "description": "",
-                        "amount": pending,
+                        "amount": actual_balance_change,  # Store the actual balance change
+                        "deposit_val": deposit_val,
+                        "withdraw_val": withdraw_val,
                         "original_balance": Decimal('0.00'),
                         "new_balance": Decimal('0.00'),
                         "page_num": page_num
@@ -423,7 +461,7 @@ class UOBProcessor(BaseProcessor):
                     )
                     # track right edge
                     self._uob_balance_right_edge = balance_blk["bbox"][2] if self._uob_balance_right_edge is None else max(self._uob_balance_right_edge, balance_blk["bbox"][2])
-                    pending = Decimal('0.00')
+                    # Don't reset pending to 0.00 - keep the current balance for next row calculation
 
             self._carry = pending
 
@@ -622,23 +660,54 @@ class UOBProcessor(BaseProcessor):
             log_func("=" * 90)
 
             running = closing_balance
+            log_func(f"🔍 DEBUG: Starting reverse calculation from RM {running:,.2f}")
+            log_func("🔍 DEBUG: Going backwards through transactions...")
+            
             for t in reversed(transactions):
                 amt = t.get('amount', Decimal('0.00')) or Decimal('0.00')
+                deposit_val = t.get('deposit_val')
+                withdraw_val = t.get('withdraw_val')
+                date = t.get('date', '')
+                desc = t.get('description', '')
+                
+                log_func(f"🔍 DEBUG: Processing transaction: {date} - {desc}")
+                log_func(f"🔍 DEBUG:   Current running balance: RM {running:,.2f}")
+                log_func(f"🔍 DEBUG:   Transaction amount: RM {amt:,.2f}")
+                log_func(f"🔍 DEBUG:   Deposit value: RM {deposit_val:,.2f}" if deposit_val else "🔍 DEBUG:   Deposit value: None")
+                log_func(f"🔍 DEBUG:   Withdrawal value: RM {withdraw_val:,.2f}" if withdraw_val else "🔍 DEBUG:   Withdrawal value: None")
+                
                 # The displayed balance for this row is after applying this row's change
                 t['new_balance'] = running
+                log_func(f"🔍 DEBUG:   Setting new_balance for this row: RM {running:,.2f}")
+                
+                # Calculate the previous balance by reversing this transaction
+                previous_balance = running
+                
+                # The "amount" field now represents the actual balance change for this row
+                # When going backwards, we need to reverse this change
+                # If amount is positive (balance increased), subtract it to go backwards
+                # If amount is negative (balance decreased), add it to go backwards
                 running = (running - amt).quantize(Decimal('0.01'))
+                
+                log_func(f"🔍 DEBUG:   Previous balance calculation: {previous_balance:,.2f} - {amt:,.2f} = {running:,.2f}")
+                log_func(f"🔍 DEBUG:   New running balance: RM {running:,.2f}")
+                log_func("🔍 DEBUG:   " + "-" * 50)
 
             self._computed_opening_balance = running
 
+            log_func("🔍 DEBUG: Final transaction list with calculated balances:")
+            log_func("🔍 DEBUG: " + "=" * 80)
             for i, t in enumerate(transactions, 1):
                 desc = (t.get('description') or '')
                 if len(desc) > 37:
                     desc = desc[:37] + '...'
                 amt = t.get('amount', Decimal('0.00')) or Decimal('0.00')
                 log_func(f"{i:<3} {t.get('date',''):<10} {desc:<40} {amt:>12,.2f} {t['new_balance']:>15,.2f}")
+                log_func(f"🔍 DEBUG: Row {i}: Date={t.get('date','')}, Amount={amt:,.2f}, New Balance={t['new_balance']:,.2f}, Deposit={t.get('deposit_val', 'None')}, Withdrawal={t.get('withdraw_val', 'None')}")
 
             log_func("=" * 90)
             log_func(f"🟡 Computed opening balance: RM {self._computed_opening_balance:,.2f}")
+            log_func("🔍 DEBUG: Balance calculation complete!")
             return transactions
         except Exception as e:
             log_func(f"⚠️ Error recalculating UOB balances: {e}")

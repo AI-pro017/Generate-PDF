@@ -261,9 +261,18 @@ class PBBProcessor(BaseProcessor):
             for t in rev:
                 debit = t.get('debit', Decimal('0.00')) or Decimal('0.00')
                 credit = t.get('credit', Decimal('0.00')) or Decimal('0.00')
-                running = (running + debit - credit).quantize(Decimal('0.01'))
                 ct = dict(t)
+                # The balance to display for this row (balance *after* this transaction)
+                # is the 'running' balance from the previous iteration.
                 ct['new_balance'] = running
+                
+                # Now calculate the balance *before* this transaction, which will be
+                # the 'running' balance for the next iteration (the row above).
+                # Rule: for credit, apply - (subtract); for debit, apply + (add)
+                if credit > 0:
+                    running = (running - credit).quantize(Decimal('0.01'))
+                if debit > 0:
+                    running = (running + debit).quantize(Decimal('0.01'))
                 computed.append(ct)
                 total_debit += debit
                 total_credit += credit
@@ -287,3 +296,58 @@ class PBBProcessor(BaseProcessor):
         except Exception as e:
             log_func(f"⚠️ Error recalculating PBB balances: {e}")
             return transactions
+
+    # Override populate to ensure only the very last transaction gets the ending balance
+    def _populate_new_values(self, transactions: List[Dict], log_func: Callable = print):
+        try:
+            # Handle summary replacements (closing balance)
+            for rep in self.balance_replacements:
+                if rep.get('type') == 'beginning_balance':
+                    # This is the closing balance - use user input
+                    rep['new_value'] = self._format_amount(self.beginning_balance)
+                    log_func(f"🔍 PBB closing balance: {rep['new_value']}")
+
+            # Group transactions by page
+            from collections import defaultdict
+            tx_by_page = defaultdict(list)
+            for tx in transactions:
+                tx_by_page[tx['page_num']].append(tx)
+
+            reps_by_page = defaultdict(list)
+            for rep in self.balance_replacements:
+                if rep.get('type') == 'transaction_balance':
+                    reps_by_page[rep['page_num']].append(rep)
+
+            # Find the very last transaction across all pages
+            all_transactions = sorted(transactions, key=lambda t: (t['page_num'], t.get('y_position', 0)))
+            last_transaction = all_transactions[-1] if all_transactions else None
+
+            # Assign transaction balances per page
+            for page_num, txs in tx_by_page.items():
+                reps = sorted(reps_by_page.get(page_num, []), key=lambda r: r.get('y_position', 0))
+                n = min(len(txs), len(reps))
+                log_func(f"🔍 PBB page {page_num}: {len(txs)} transactions, {len(reps)} replacements")
+                
+                for i in range(n):
+                    # Check if this is the very last transaction across ALL pages
+                    is_last_across_all_pages = (txs[i] == last_transaction)
+                    
+                    if is_last_across_all_pages:
+                        # Only the very last transaction row across all pages gets the ending balance
+                        val = self._format_amount(self.beginning_balance)
+                        reps[i]['new_value'] = val
+                        log_func(f"🔍 PBB last transaction across all pages: {val}")
+                    else:
+                        # All other rows use calculated values from reverse calculation
+                        # This represents the balance AFTER this transaction was applied
+                        val = self._format_amount(txs[i]['new_balance'])
+                        reps[i]['new_value'] = val
+                        log_func(f"🔍 PBB transaction {i}: {val} (balance after transaction)")
+
+            # Debug: show final values for all replacements
+            log_func(f"🔍 PBB Final replacement values:")
+            for i, rep in enumerate(self.balance_replacements):
+                log_func(f"🔍 PBB {i}: type={rep.get('type')}, value={rep.get('new_value')}")
+
+        except Exception as e:
+            log_func(f"⚠️ Error populating PBB values: {e}")
