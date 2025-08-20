@@ -443,7 +443,7 @@ class HLBProcessor(BaseProcessor):
             log_func(f"⚠️ Error overriding HLB summary values: {e}")
 
     def generate_updated_pdf(self, transactions: List[Dict], output_path: str, log_func: Callable = print):
-        log_func("📄 Generating updated PDF (HLB style)...")
+        log_func(" Generating updated PDF (HLB style)...")
         # Fill new values first
         self._populate_new_values(transactions, log_func)
 
@@ -456,6 +456,8 @@ class HLBProcessor(BaseProcessor):
 
         # slightly grey text color to match original HLB numbers
         hlb_text_color = (0.20, 0.20, 0.20)
+        # pure black for ending balance to make it truly bold like the Date
+        ending_balance_color = (0, 0, 0)
 
         for page_idx in range(len(orig)):
             src = orig.load_page(page_idx)
@@ -463,7 +465,7 @@ class HLBProcessor(BaseProcessor):
             dst.show_pdf_page(dst.rect, orig, page_idx)
 
             reps = [r for r in self.balance_replacements if r['page_num'] == page_idx + 1]
-            log_func(f"📄 Page {page_idx+1}: {len(reps)} balance positions")
+            log_func(f" Page {page_idx+1}: {len(reps)} balance positions")
 
             # erase
             for rep in reps:
@@ -476,10 +478,41 @@ class HLBProcessor(BaseProcessor):
             for rep in reps:
                 fs   = rep.get('font_size', 12)
                 text = str(rep['new_value'])
-                char_w = fs * 0.5
-                x = rep['bbox'][2] - len(text) * char_w
-                y = rep['bbox'][1] + fs * 0.8
-                dst.insert_text(fitz.Point(x, y), text, fontsize=fs, color=hlb_text_color, fontname="helv")
+                
+                # Use exact same style as Date row for ending balance
+                if rep.get('type') == 'ending_balance':
+                    # Make it bold and align exactly like the Date above it
+                    bbox = rep['bbox']
+                    char_w = fs * 0.5
+                    x = bbox[2] - len(text) * char_w
+                    y = bbox[1] + fs * 0.8
+                    
+                    # Fix right alignment to match the Date exactly
+                    # The ending balance should have the same right edge as the Date
+                    # Move it to the right by reducing the left offset
+                    x = x - 2  # Reduced from -6 to -2 to move it further right
+                    
+                    # Try different font families that might match the original HLB bold style
+                    try:
+                        # Try Arial-Bold first (often used in statements)
+                        dst.insert_text(fitz.Point(x, y), text, fontsize=fs, color=ending_balance_color, fontname="Arial-Bold")
+                        log_func(f"🔍 Drawing ending balance '{text}' with Arial-Bold font (size: {fs}, pure black, pos: {x:.1f}, {y:.1f})")
+                    except:
+                        try:
+                            # Fallback to Helvetica-Bold
+                            dst.insert_text(fitz.Point(x, y), text, fontsize=fs, color=ending_balance_color, fontname="Helvetica-Bold")
+                            log_func(f"🔍 Drawing ending balance '{text}' with Helvetica-Bold font (size: {fs}, pure black, pos: {x:.1f}, {y:.1f})")
+                        except:
+                            # Final fallback to helv with pure black
+                            dst.insert_text(fitz.Point(x, y), text, fontsize=fs, color=ending_balance_color, fontname="helv")
+                            log_func(f"🔍 Drawing ending balance '{text}' with helv font (size: {fs}, pure black, pos: {x:.1f}, {y:.1f})")
+                else:
+                    # Normal style for transaction rows
+                    char_w = fs * 0.5
+                    x = rep['bbox'][2] - len(text) * char_w
+                    y = rep['bbox'][1] + fs * 0.8
+                    dst.insert_text(fitz.Point(x, y), text, fontsize=fs, color=hlb_text_color, fontname="helv")
+                    log_func(f"🔍 Drawing transaction balance '{text}' with normal style")
 
         out.save(output_path)
         out.close()
