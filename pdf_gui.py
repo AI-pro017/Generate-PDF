@@ -35,8 +35,8 @@ class PDFProcessorGUI:
         
         # Configure root window with macOS-compatible settings
         if self.is_macos:
-            # Use system colors on macOS for better compatibility
-            self.root.configure(bg='SystemWindowBackgroundColor')
+            # Use cross-platform colors on macOS for better compatibility
+            self.root.configure(bg='#f5f5f5')  # Light gray that works on macOS
             # Fix for macOS focus issues
             self.root.lift()
             self.root.attributes('-topmost', True)
@@ -92,15 +92,27 @@ class PDFProcessorGUI:
         
     def get_bg_color(self):
         """Get appropriate background color for the platform"""
-        return 'SystemWindowBackgroundColor' if self.is_macos else '#f0f0f0'
+        if self.is_macos:
+            # Use cross-platform colors that work on macOS
+            return '#f5f5f5'  # Light gray that looks good on macOS
+        else:
+            return '#f0f0f0'
     
     def get_title_bg_color(self):
         """Get appropriate title background color for the platform"""
-        return 'SystemHeaderBackgroundColor' if self.is_macos else '#2c3e50'
+        if self.is_macos:
+            # Use cross-platform colors that work on macOS
+            return '#2c3e50'  # Dark blue that looks good on macOS
+        else:
+            return '#2c3e50'
     
     def get_title_fg_color(self):
         """Get appropriate title foreground color for the platform"""
-        return 'SystemHeaderTextColor' if self.is_macos else 'white'
+        if self.is_macos:
+            # Use cross-platform colors that work on macOS
+            return 'white'  # White text on dark background
+        else:
+            return 'white'
         
     def setup_gui(self):
         """Setup the GUI components"""
@@ -156,7 +168,7 @@ class PDFProcessorGUI:
             text="🏦 Select Bank", 
             font=label_font,
             bg=self.get_bg_color(),
-            fg='SystemControlTextColor' if self.is_macos else '#2c3e50'
+            fg='#2c3e50'  # Use cross-platform color instead of SystemControlTextColor
         )
         bank_frame.pack(fill='x', pady=(0, 15))
         
@@ -194,7 +206,7 @@ class PDFProcessorGUI:
             bank_input_frame,
             text=f"✅ {self.supported_banks[0]} - Fully supported (reverse calculation)",
             font=('System', 9) if self.is_macos else ('Arial', 9),
-            fg='green' if not self.is_macos else 'SystemGreenColor',
+            fg='green',  # Use standard green instead of SystemGreenColor
             bg=self.get_bg_color()
         )
         self.bank_status_label.pack(side='right', padx=(10, 0))
