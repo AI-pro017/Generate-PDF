@@ -219,7 +219,7 @@ class PDFProcessorGUI:
         
         # Update status label (all banks supported, reverse calculation)
         status_text = f"✅ {selected_bank} - Fully supported (reverse calculation)"
-        status_color = 'green' if not self.is_macos else 'SystemGreenColor'
+        status_color = 'green'  # Use standard green for all platforms
         
         self.bank_status_label.config(text=status_text, fg=status_color)
         
@@ -244,7 +244,7 @@ class PDFProcessorGUI:
             text="📄 Select PDF File", 
             font=label_font,
             bg=self.get_bg_color(),
-            fg='SystemControlTextColor' if self.is_macos else '#2c3e50'
+            fg='#2c3e50'  # Use cross-platform color instead of SystemControlTextColor
         )
         input_frame.pack(fill='x', pady=(0, 15))
         
@@ -300,7 +300,7 @@ class PDFProcessorGUI:
             output_info_frame,
             text=f"📁 {output_folder}",
             font=text_font,
-            fg='blue' if not self.is_macos else 'SystemBlueColor',
+            fg='blue',  # Use standard blue for all platforms
             bg=self.get_bg_color()
         )
         self.output_folder_label.pack(side='left', padx=(10, 0))
@@ -317,7 +317,7 @@ class PDFProcessorGUI:
             text="💰 Closing Balance", 
             font=label_font,
             bg=self.get_bg_color(),
-            fg='SystemControlTextColor' if self.is_macos else '#2c3e50'
+            fg='#2c3e50'  # Use cross-platform color instead of SystemControlTextColor
         )
         balance_frame.pack(fill='x', pady=(0, 15))
         
@@ -343,7 +343,7 @@ class PDFProcessorGUI:
             balance_input_frame, 
             text="(e.g., 4000.00)", 
             font=('System', 9) if self.is_macos else ('Arial', 9),
-            fg='SystemSecondaryLabelColor' if self.is_macos else 'gray',
+            fg='gray',  # Use standard gray for all platforms
             bg=self.get_bg_color()
         ).pack(side='left', padx=(10, 0))
         
@@ -390,7 +390,7 @@ class PDFProcessorGUI:
             text="📊 Processing Results", 
             font=label_font,
             bg=self.get_bg_color(),
-            fg='SystemControlTextColor' if self.is_macos else '#2c3e50'
+            fg='#2c3e50'  # Use cross-platform color instead of SystemControlTextColor
         )
         results_frame.pack(fill='both', expand=True, pady=(0, 15))
         
@@ -448,8 +448,8 @@ class PDFProcessorGUI:
     def create_status_bar(self):
         """Create status bar"""
         
-        status_bg = 'SystemWindowBackgroundColor' if self.is_macos else '#34495e'
-        status_fg = 'SystemSecondaryLabelColor' if self.is_macos else 'white'
+        status_bg = '#34495e'  # Use cross-platform color instead of SystemWindowBackgroundColor
+        status_fg = 'white'  # Use cross-platform color instead of SystemSecondaryLabelColor
         status_font = ('System', 9) if self.is_macos else ('Arial', 9)
         
         self.status_bar = tk.Label(
